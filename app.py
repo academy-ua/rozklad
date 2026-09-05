@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import json
 from ortools.sat.python.cp_model import CpModel, CpSolver, OPTIMAL, FEASIBLE
 
 st.set_page_config(page_title="Генератор розкладу академії", layout="wide")
@@ -19,8 +20,56 @@ SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
+# Ініціалізація стану сесії
 if 'schedule_matrix' not in st.session_state:
     st.session_state.schedule_matrix = None
+
+if 'cfg_groups' not in st.session_state:
+    st.session_state.cfg_groups = pd.DataFrame([
+        {"Група": "ПО-11Б", "Формат за замовчуванням": "Очно", "День практики": "Немає"}
+    ])
+
+if 'cfg_teachers' not in st.session_state:
+    st.session_state.cfg_teachers = "Черненко В.П."
+
+if 'cfg_rooms' not in st.session_state:
+    st.session_state.cfg_rooms = "1 аудиторія\nКомп'ютерний клас\nОНЛАЙН"
+
+if 'cfg_limits' not in st.session_state:
+    st.session_state.cfg_limits = pd.DataFrame([
+        {"Викладач": "Черненко В.П.", "День тижня": "Вівторок", "Недоступні пари": ["Всі пари"]}
+    ])
+
+if 'cfg_curriculum' not in st.session_state:
+    st.session_state.cfg_curriculum = pd.DataFrame([
+        {
+            "Групи": ["ПО-11Б"],
+            "Предмет": "Математика",
+            "Викладач": "Черненко В.П.",
+            "Годин на семестр": 30,
+            "Формат": "Очно",
+            "Потокова лекція?": "Ні",
+            "Аудиторія": "1 аудиторія"
+        }
+    ])
+
+# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ ---
+st.markdown("### 💾 Збереження та відновлення налаштувань")
+col_imp, col_exp = st.columns(2)
+
+with col_imp:
+    uploaded_file = st.file_uploader("📂 Відновити збережені дані (файл .json)", type=["json"])
+    if uploaded_file is not None:
+        try:
+            config = json.load(uploaded_file)
+            st.session_state.cfg_groups = pd.DataFrame(config.get("groups", []))
+            st.session_state.cfg_teachers = config.get("teachers", "")
+            st.session_state.cfg_rooms = config.get("rooms", "")
+            st.session_state.cfg_limits = pd.DataFrame(config.get("limits", []))
+            st.session_state.cfg_curriculum = pd.DataFrame(config.get("curriculum", []))
+            st.success("Дані успішно завантажено та відновлено!")
+        except Exception as e:
+            st.error(f"Помилка зчитування файлу: {e}")
 
 # 1. Параметри навчального семестру
 st.markdown("### 1. Параметри семестру та сітки")
@@ -42,11 +91,8 @@ col_g, col_t, col_r = st.columns(3)
 
 with col_g:
     st.markdown("**Академічні групи**")
-    default_groups = pd.DataFrame([
-        {"Група": "ПО-11Б", "Формат за замовчуванням": "Очно", "День практики": "Немає"}
-    ])
     groups_df = st.data_editor(
-        default_groups,
+        st.session_state.cfg_groups,
         num_rows="dynamic",
         column_config={
             "Формат за замовчуванням": st.column_config.SelectboxColumn(options=["Очно", "Онлайн"]),
@@ -60,7 +106,7 @@ with col_t:
     st.markdown("**Список викладачів**")
     teachers_text = st.text_area(
         "ПІБ викладачів (кожен з нового рядка)",
-        "Черненко В.П.",
+        st.session_state.cfg_teachers,
         height=120
     )
 
@@ -68,7 +114,7 @@ with col_r:
     st.markdown("**Аудиторний фонд**")
     rooms_text = st.text_area(
         "Аудиторії (кожна з нового рядка)",
-        "1 аудиторія\nКомп'ютерний клас\nОНЛАЙН",
+        st.session_state.cfg_rooms,
         height=120
     )
 
@@ -88,16 +134,8 @@ if not active_rooms:
 # 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
 
-default_limits = pd.DataFrame([
-    {
-        "Викладач": active_teachers[0],
-        "День тижня": "Вівторок",
-        "Недоступні пари": ["Всі пари"]
-    }
-])
-
 limits_df = st.data_editor(
-    default_limits,
+    st.session_state.cfg_limits,
     num_rows="dynamic",
     column_config={
         "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
@@ -111,20 +149,8 @@ limits_df = st.data_editor(
 # 4. Навчальний план дисциплін
 st.markdown("### 4. Навчальний план дисциплін")
 
-default_plan = pd.DataFrame([
-    {
-        "Групи": [active_groups[0]],
-        "Предмет": "Математика",
-        "Викладач": active_teachers[0],
-        "Годин на семестр": 30,
-        "Формат": "Очно",
-        "Потокова лекція?": "Ні",
-        "Аудиторія": active_rooms[0]
-    }
-])
-
 curriculum_df = st.data_editor(
-    default_plan,
+    st.session_state.cfg_curriculum,
     num_rows="dynamic",
     column_config={
         "Групи": st.column_config.MultiselectColumn(options=active_groups, required=True, help="Оберіть 1 або кілька груп"),
@@ -138,6 +164,26 @@ curriculum_df = st.data_editor(
     use_container_width=True,
     key="curriculum_editor_grid"
 )
+
+# Формування даних для експорту налаштувань
+config_export_data = {
+    "groups": groups_df.to_dict(orient="records"),
+    "teachers": teachers_text,
+    "rooms": rooms_text,
+    "limits": limits_df.to_dict(orient="records"),
+    "curriculum": curriculum_df.to_dict(orient="records")
+}
+
+with col_exp:
+    st.write(" ")
+    st.write(" ")
+    st.download_button(
+        label="📥 Зберегти всі введені налаштування у файл (.json)",
+        data=json.dumps(config_export_data, ensure_ascii=False, indent=2),
+        file_name="rozklad_config.json",
+        mime="application/json",
+        use_container_width=True
+    )
 
 # Функція підсвічування осередків
 def style_schedule_grid(val):
@@ -193,7 +239,6 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             "room": room
         })
 
-    # Об'єднання потокових предметів
     stream_dict = {}
     non_stream_lessons = []
 
@@ -242,18 +287,15 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             for s in range(s_cnt):
                 x[l["id"], d, s] = model.NewBoolVar(f'x_{l["id"]}_{d}_{s}')
 
-    # Обмеження 1: Рівно 1 пара на тиждень
     for l in lessons:
         model.Add(sum(x[l["id"], d, s] for d in range(d_cnt) for s in range(s_cnt)) == 1)
 
-    # Обмеження 2: Не більше 1 пари у групи на один слот
     for g in all_registered_groups:
         g_lessons = [l for l in lessons if g in l["groups"]]
         for d in range(d_cnt):
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in g_lessons) <= 1)
 
-    # Обмеження 3: Дні практики
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
         p_d = str(g_row.get("День практики", "Немає")).strip()
@@ -264,7 +306,6 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
                 for s in range(s_cnt):
                     model.Add(x[l["id"], p_idx, s] == 0)
 
-    # Обмеження 4: Недоступність викладачів
     if not lim_df.empty:
         for _, lim_row in lim_df.iterrows():
             t_n = str(lim_row.get("Викладач", "")).strip()
@@ -299,7 +340,6 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
                         for l in t_lessons:
                             model.Add(x[l["id"], d_idx, s_idx] == 0)
 
-    # Обмеження 5: Викладач не проводитиме 2 пари одночасно
     all_teachers = list(set([l["teacher"] for l in lessons if l["teacher"]]))
     for t in all_teachers:
         t_lessons = [l for l in lessons if l["teacher"] == t]
@@ -307,31 +347,28 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in t_lessons) <= 1)
 
-    # Обмеження 6: Комп'ютерний клас
     comp_lessons = [l for l in lessons if "Комп" in l["room"]]
     for d in range(d_cnt):
         for s in range(s_cnt):
             model.Add(sum(x[l["id"], d, s] for l in comp_lessons) <= 1)
 
-    # --- ПРІОРИТЕТИЗАЦІЯ ПАР (ЦІЛЬОВА ФУНКЦІЯ) ---
-    # 1, 2, 3 пари — пріоритет (штраф 0)
-    # 0 пара — середній пріоритет (штраф 10)
-    # 4 пара — найменший пріоритет (штраф 100)
-    slot_penalties = {
-        0: 10,   # 0 пара (12:42-13:55)
-        1: 0,    # 1 пара (14:05-15:15)
-        2: 0,    # 2 пара (15:25-16:35)
-        3: 0,    # 3 пара (16:45-17:55)
-        4: 100   # 4 пара (18:05-19:15)
-    }
-
     penalties = []
+    slot_penalties = {0: 10, 1: 0, 2: 0, 3: 0, 4: 100}
     for l in lessons:
         for d in range(d_cnt):
             for s in range(s_cnt):
                 p_cost = slot_penalties.get(s, 0)
                 if p_cost > 0:
                     penalties.append(p_cost * x[l["id"], d, s])
+
+    online_lessons = [l for l in lessons if l["fmt"] == "Онлайн"]
+    if online_lessons:
+        for d in range(d_cnt):
+            day_has_online = model.NewBoolVar(f'day_has_online_{d}')
+            for l in online_lessons:
+                for s in range(s_cnt):
+                    model.Add(x[l["id"], d, s] <= day_has_online)
+            penalties.append(200 * day_has_online)
 
     if penalties:
         model.Minimize(sum(penalties))
@@ -341,7 +378,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
     status = solver.Solve(model)
 
     if status not in [OPTIMAL, FEASIBLE]:
-        return None, "Не вдалося розставити розклад. Занадто багато обмежений або замало вільних слотів."
+        return None, "Не вдалося розставити розклад. Занадто багато обмежень або замало вільних слотів."
 
     rows_list = []
     
@@ -390,7 +427,7 @@ if st.button("Згенерувати розклад", type="primary"):
     if err:
         st.error(err)
     else:
-        st.success("Розклад успішно згенеровано з урахуванням пріоритетів пар!")
+        st.success("Розклад успішно згенеровано!")
         st.session_state.schedule_matrix = res_matrix
 
 # Відображення та експорт
