@@ -33,7 +33,7 @@ if 'cfg_teachers' not in st.session_state:
     st.session_state.cfg_teachers = "Черненко В.П."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "nОНЛАЙН\n27-А Комп'ютерний клас\1"
+    st.session_state.cfg_rooms = "ОНЛАЙН\n27-А Комп'ютерний клас\n1"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
