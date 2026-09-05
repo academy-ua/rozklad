@@ -20,7 +20,6 @@ SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
-# Ініціалізація стану сесії
 if 'schedule_matrix' not in st.session_state:
     st.session_state.schedule_matrix = None
 
@@ -37,19 +36,19 @@ if 'cfg_rooms' not in st.session_state:
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
-        {"Викладач": "Черненко В.П.", "День тижня": "Вівторок", "Недоступні пари": ["Всі пари"]}
+        {"Викладач": "Усатенко В.М.", "День тижня": "Вівторок", "Недоступні пари": ["Всі пари"]}
     ])
 
 if 'cfg_curriculum' not in st.session_state:
     st.session_state.cfg_curriculum = pd.DataFrame([
         {
             "Групи": ["ПО-11Б"],
-            "Предмет": "Математика",
-            "Викладач": "Черненко В.П.",
+            "Предмет": "Педагогіка",
+            "Викладач": "Усатенко В.М.",
             "Годин на семестр": 30,
             "Формат": "Очно",
-            "Потокова лекція?": "Ні",
-            "Аудиторія": "1 аудиторія"
+            "Потокова лекція": "Ні",
+            "Аудиторія": "1"
         }
     ])
 
@@ -287,15 +286,31 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             for s in range(s_cnt):
                 x[l["id"], d, s] = model.NewBoolVar(f'x_{l["id"]}_{d}_{s}')
 
+    # Обмеження 1: Рівно 1 пара на тиждень
     for l in lessons:
         model.Add(sum(x[l["id"], d, s] for d in range(d_cnt) for s in range(s_cnt)) == 1)
 
+    # Обмеження 2: Не більше 1 пари у групи на один слот
     for g in all_registered_groups:
         g_lessons = [l for l in lessons if g in l["groups"]]
         for d in range(d_cnt):
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in g_lessons) <= 1)
 
+    # --- ОБМЕЖЕННЯ: КАТЕГОРИЧНА ВІДСУТНІСТЬ «ВІКОН» У СТУДЕНТІВ ---
+    for g in all_registered_groups:
+        g_lessons = [l for l in lessons if g in l["groups"]]
+        for d in range(d_cnt):
+            for s1 in range(s_cnt):
+                for s2 in range(s1 + 1, s_cnt):
+                    for s3 in range(s2 + 1, s_cnt):
+                        y_s1 = sum(x[l["id"], d, s1] for l in g_lessons)
+                        y_s2 = sum(x[l["id"], d, s2] for l in g_lessons)
+                        y_s3 = sum(x[l["id"], d, s3] for l in g_lessons)
+                        # Забороняємо паттерн 1 - 0 - 1
+                        model.Add(y_s1 - y_s2 + y_s3 <= 1)
+
+    # Обмеження 3: Дні практики
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
         p_d = str(g_row.get("День практики", "Немає")).strip()
@@ -306,6 +321,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
                 for s in range(s_cnt):
                     model.Add(x[l["id"], p_idx, s] == 0)
 
+    # Обмеження 4: Недоступність викладачів
     if not lim_df.empty:
         for _, lim_row in lim_df.iterrows():
             t_n = str(lim_row.get("Викладач", "")).strip()
@@ -340,6 +356,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
                         for l in t_lessons:
                             model.Add(x[l["id"], d_idx, s_idx] == 0)
 
+    # Обмеження 5: Викладач не проводитиме 2 пари одночасно
     all_teachers = list(set([l["teacher"] for l in lessons if l["teacher"]]))
     for t in all_teachers:
         t_lessons = [l for l in lessons if l["teacher"] == t]
@@ -347,12 +364,22 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in t_lessons) <= 1)
 
+    # --- ОБМЕЖЕННЯ: МІНІМУМ 2 ПАРИ У ВИКЛАДАЧА НА ДЕНЬ (АБО 0) ---
+    for t in all_teachers:
+        t_lessons = [l for l in lessons if l["teacher"] == t]
+        for d in range(d_cnt):
+            t_day_count = sum(x[l["id"], d, s] for l in t_lessons for s in range(s_cnt))
+            model.Add(t_day_count != 1)
+
+    # Обмеження 6: Комп'ютерний клас
     comp_lessons = [l for l in lessons if "Комп" in l["room"]]
     for d in range(d_cnt):
         for s in range(s_cnt):
             model.Add(sum(x[l["id"], d, s] for l in comp_lessons) <= 1)
 
+    # --- ЦІЛЬОВА ФУНКЦІЯ ПРІОРИТЕТІВ ТА ГРУПУВАННЯ ОНЛАЙН-ДНІВ ---
     penalties = []
+
     slot_penalties = {0: 10, 1: 0, 2: 0, 3: 0, 4: 100}
     for l in lessons:
         for d in range(d_cnt):
@@ -378,7 +405,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
     status = solver.Solve(model)
 
     if status not in [OPTIMAL, FEASIBLE]:
-        return None, "Не вдалося розставити розклад. Занадто багато обмежень або замало вільних слотів."
+        return None, "Не вдалося розставити розклад. Занадто багато суворих обмежень або замало вільних слотів."
 
     rows_list = []
     
@@ -427,7 +454,7 @@ if st.button("Згенерувати розклад", type="primary"):
     if err:
         st.error(err)
     else:
-        st.success("Розклад успішно згенеровано!")
+        st.success("Розклад успішно згенеровано! Без вікон у студентів та без одинарних пар у викладачів.")
         st.session_state.schedule_matrix = res_matrix
 
 # Відображення та експорт
