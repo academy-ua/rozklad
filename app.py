@@ -36,7 +36,7 @@ ACTIVE_DAYS = DAY_NAMES[:days_count]
 ACTIVE_SLOTS = SLOT_LABELS[:slots_count]
 ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
 
-# 2. Довідники закладу (1 рядок/елемент для прикладу)
+# 2. Довідники закладу
 st.markdown("### 2. Довідники закладу")
 col_g, col_t, col_r = st.columns(3)
 
@@ -85,7 +85,7 @@ active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 if not active_rooms:
     active_rooms = ["1 аудиторія"]
 
-# 3. Обмеження викладачів (1 рядок для прикладу)
+# 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
 
 default_limits = pd.DataFrame([
@@ -108,7 +108,7 @@ limits_df = st.data_editor(
     key="limits_editor_grid"
 )
 
-# 4. Навчальний план дисциплін (1 рядок для прикладу)
+# 4. Навчальний план дисциплін
 st.markdown("### 4. Навчальний план дисциплін")
 
 default_plan = pd.DataFrame([
@@ -242,15 +242,18 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             for s in range(s_cnt):
                 x[l["id"], d, s] = model.NewBoolVar(f'x_{l["id"]}_{d}_{s}')
 
+    # Обмеження 1: Рівно 1 пара на тиждень
     for l in lessons:
         model.Add(sum(x[l["id"], d, s] for d in range(d_cnt) for s in range(s_cnt)) == 1)
 
+    # Обмеження 2: Не більше 1 пари у групи на один слот
     for g in all_registered_groups:
         g_lessons = [l for l in lessons if g in l["groups"]]
         for d in range(d_cnt):
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in g_lessons) <= 1)
 
+    # Обмеження 3: Дні практики
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
         p_d = str(g_row.get("День практики", "Немає")).strip()
@@ -261,6 +264,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
                 for s in range(s_cnt):
                     model.Add(x[l["id"], p_idx, s] == 0)
 
+    # Обмеження 4: Недоступність викладачів
     if not lim_df.empty:
         for _, lim_row in lim_df.iterrows():
             t_n = str(lim_row.get("Викладач", "")).strip()
@@ -295,6 +299,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
                         for l in t_lessons:
                             model.Add(x[l["id"], d_idx, s_idx] == 0)
 
+    # Обмеження 5: Викладач не проводитиме 2 пари одночасно
     all_teachers = list(set([l["teacher"] for l in lessons if l["teacher"]]))
     for t in all_teachers:
         t_lessons = [l for l in lessons if l["teacher"] == t]
@@ -302,17 +307,41 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_o
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in t_lessons) <= 1)
 
+    # Обмеження 6: Комп'ютерний клас
     comp_lessons = [l for l in lessons if "Комп" in l["room"]]
     for d in range(d_cnt):
         for s in range(s_cnt):
             model.Add(sum(x[l["id"], d, s] for l in comp_lessons) <= 1)
 
+    # --- ПРІОРИТЕТИЗАЦІЯ ПАР (ЦІЛЬОВА ФУНКЦІЯ) ---
+    # 1, 2, 3 пари — пріоритет (штраф 0)
+    # 0 пара — середній пріоритет (штраф 10)
+    # 4 пара — найменший пріоритет (штраф 100)
+    slot_penalties = {
+        0: 10,   # 0 пара (12:42-13:55)
+        1: 0,    # 1 пара (14:05-15:15)
+        2: 0,    # 2 пара (15:25-16:35)
+        3: 0,    # 3 пара (16:45-17:55)
+        4: 100   # 4 пара (18:05-19:15)
+    }
+
+    penalties = []
+    for l in lessons:
+        for d in range(d_cnt):
+            for s in range(s_cnt):
+                p_cost = slot_penalties.get(s, 0)
+                if p_cost > 0:
+                    penalties.append(p_cost * x[l["id"], d, s])
+
+    if penalties:
+        model.Minimize(sum(penalties))
+
     solver = CpSolver()
-    solver.parameters.max_time_in_seconds = 5.0
+    solver.parameters.max_time_in_seconds = 8.0
     status = solver.Solve(model)
 
     if status not in [OPTIMAL, FEASIBLE]:
-        return None, "Не вдалося розставити розклад. Занадто багато обмежень або замало вільних слотів."
+        return None, "Не вдалося розставити розклад. Занадто багато обмежений або замало вільних слотів."
 
     rows_list = []
     
@@ -361,7 +390,7 @@ if st.button("Згенерувати розклад", type="primary"):
     if err:
         st.error(err)
     else:
-        st.success("Розклад успішно згенеровано!")
+        st.success("Розклад успішно згенеровано з урахуванням пріоритетів пар!")
         st.session_state.schedule_matrix = res_matrix
 
 # Відображення та експорт
@@ -376,10 +405,14 @@ if st.session_state.schedule_matrix is not None:
     )
 
     df_full = st.session_state.schedule_matrix.copy()
+    current_df_to_download = df_full
+    file_label_name = "povnyi"
 
     if view_option == "Повний розклад (всі групи)":
         styled_df = df_full.style.map(style_schedule_grid)
         st.dataframe(styled_df, use_container_width=True, height=600)
+        current_df_to_download = df_full
+        file_label_name = "povnyi"
 
     elif view_option == "По конкретній групі":
         group_cols = [c for c in df_full.columns if c not in ["День тижня", "Пара / Час"]]
@@ -388,6 +421,8 @@ if st.session_state.schedule_matrix is not None:
         df_group = df_full[["День тижня", "Пара / Час", selected_g]]
         styled_g = df_group.style.map(style_schedule_grid)
         st.dataframe(styled_g, use_container_width=True, height=600)
+        current_df_to_download = df_group
+        file_label_name = f"hrupa_{selected_g}"
 
     elif view_option == "По конкретному викладачу":
         all_teachers_in_plan = [t for t in active_teachers if t]
@@ -403,20 +438,60 @@ if st.session_state.schedule_matrix is not None:
 
         styled_t = df_teacher.style.map(style_schedule_grid)
         st.dataframe(styled_t, use_container_width=True, height=600)
+        current_df_to_download = df_teacher
+        file_label_name = f"vykladach_{selected_t}"
 
-    # Експорт у Excel
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df_full.to_excel(writer, index=False, sheet_name='Повний розклад')
-        
-        workbook  = writer.book
-        worksheet = writer.sheets['Повний розклад']
-        wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center'})
-        worksheet.set_column('A:Z', 25, wrap_format)
+    st.markdown("#### 📥 Завантаження розкладу")
+    col_down1, col_down2 = st.columns(2)
 
-    st.download_button(
-        label="📥 Завантажити повний розклад у Excel (.xlsx)",
-        data=buffer.getvalue(),
-        file_name="rozklad_academy.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    with col_down1:
+        buffer_current = io.BytesIO()
+        with pd.ExcelWriter(buffer_current, engine='xlsxwriter') as writer:
+            current_df_to_download.to_excel(writer, index=False, sheet_name='Розклад')
+            workbook = writer.book
+            worksheet = writer.sheets['Розклад']
+            wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center'})
+            worksheet.set_column('A:Z', 25, wrap_format)
+
+        st.download_button(
+            label=f"📄 Завантажити обраний перегляд ({file_label_name}.xlsx)",
+            data=buffer_current.getvalue(),
+            file_name=f"rozklad_{file_label_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    with col_down2:
+        buffer_all = io.BytesIO()
+        with pd.ExcelWriter(buffer_all, engine='xlsxwriter') as writer:
+            df_full.to_excel(writer, index=False, sheet_name='Повний розклад')
+            
+            group_cols = [c for c in df_full.columns if c not in ["День тижня", "Пара / Час"]]
+            for g_col in group_cols:
+                s_name = f"Гр. {g_col}"[:31]
+                df_g = df_full[["День тижня", "Пара / Час", g_col]]
+                df_g.to_excel(writer, index=False, sheet_name=s_name)
+
+            for t_name in active_teachers:
+                if not t_name:
+                    continue
+                s_name = f"{t_name}"[:31]
+                df_t = df_full.copy()
+                for col in group_cols:
+                    df_t[col] = df_t[col].apply(
+                        lambda val: val if isinstance(val, str) and t_name in val else "-"
+                    )
+                df_t.to_excel(writer, index=False, sheet_name=s_name)
+
+            workbook = writer.book
+            wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center'})
+            for sheet in writer.sheets.values():
+                sheet.set_column('A:Z', 25, wrap_format)
+
+        st.download_button(
+            label="📦 Завантажити ВСІ розклади в один Excel (з окремими вкладками)",
+            data=buffer_all.getvalue(),
+            file_name="rozklad_vsi_vkladky.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
