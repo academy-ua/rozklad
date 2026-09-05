@@ -6,7 +6,7 @@ from ortools.sat.python.cp_model import CpModel, CpSolver, OPTIMAL, FEASIBLE
 st.set_page_config(page_title="Генератор розкладу академії", layout="wide")
 st.title("🎓 Система автоматизованого формування розкладу")
 
-# Часові слоти академії
+# Точні часові слоти академії
 SLOT_DETAILS = [
     {"num": 0, "label": "0 пара", "time": "12:42 - 13:55"},
     {"num": 1, "label": "1 пара", "time": "14:05 - 15:15"},
@@ -15,13 +15,12 @@ SLOT_DETAILS = [
     {"num": 4, "label": "4 пара", "time": "18:05 - 19:15"}
 ]
 
+SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
 if 'schedule_matrix' not in st.session_state:
     st.session_state.schedule_matrix = None
-if 'teacher_limits' not in st.session_state:
-    st.session_state.teacher_limits = []
 
 # 1. Параметри навчального семестру
 st.markdown("### 1. Параметри семестру та сітки")
@@ -35,17 +34,20 @@ with col_s:
 
 ACTIVE_DAYS = DAY_NAMES[:days_count]
 ACTIVE_SLOTS = SLOT_LABELS[:slots_count]
+ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
 
-# 2. Довідники закладу
-st.markdown("### 2. Довідники закладу (Групи, Викладачі, Аудиторії)")
+# 2. Довідники закладу (Групи, Викладачі, Аудиторії)
+st.markdown("### 2. Довідники закладу")
+st.caption("Введіть списки груп, викладачів та аудиторій. Вони автоматично сформують випадаючі списки для всіх розділів нижче.")
+
 col_g, col_t, col_r = st.columns(3)
 
 with col_g:
-    st.markdown("**Академічні групи**")
+    st.markdown("**Академічні групи та практика**")
     default_groups = pd.DataFrame([
+        {"Група": "ПО-11Б", "Формат за замовчуванням": "Очно", "День практики": "Немає"},
         {"Група": "ДО-11Б", "Формат за замовчуванням": "Очно", "День практики": "Немає"},
         {"Група": "ДО-21Б", "Формат за замовчуванням": "Очно", "День практики": "Вівторок"},
-        {"Група": "ДО-31Б онлайн", "Формат за замовчуванням": "Онлайн", "День практики": "Немає"},
         {"Група": "М-11Б", "Формат за замовчуванням": "Очно", "День практики": "Немає"}
     ])
     groups_df = st.data_editor(
@@ -63,7 +65,7 @@ with col_t:
     st.markdown("**Список викладачів**")
     teachers_text = st.text_area(
         "ПІБ викладачів (кожен з нового рядка)",
-        "Черненко В.П.\nАлексєєва Т.В.\nКулікова Т.В.\nКостенко О.В.\nКоробко Ю.В.\nПантелеймоненко А.О.\nІванов І.І.\nПетренко П.П.",
+        "Черненко В.П.\nШкляєва Г.О.\nАлексєєва Т.В.\nКулікова Т.В.\nКостенко О.В.\nКоробко Ю.В.\nПантелеймоненко А.О.\nІванов І.І.",
         height=190
     )
 
@@ -78,7 +80,7 @@ with col_r:
 # Парсинг довідників
 active_groups = [g for g in groups_df["Група"].dropna().unique().tolist() if str(g).strip()]
 if not active_groups:
-    active_groups = ["ДО-11Б"]
+    active_groups = ["ПО-11Б"]
 
 active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
 if not active_teachers:
@@ -88,60 +90,57 @@ active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 if not active_rooms:
     active_rooms = ["1 аудиторія"]
 
-# 3. Обмеження викладачів
+# 3. Обмеження та недоступність викладачів (Інтерактивна таблиця)
 st.markdown("### 3. Обмеження та недоступність викладачів")
-col_t_select, col_d_select, col_s_select, col_btn = st.columns([2, 2.5, 3, 1.5])
+st.caption("Додавайте рядки кнопкою '+' нижче. Задавайте окремі правила для кожного викладача на будь-які дні та пари.")
 
-with col_t_select:
-    limit_teacher = st.selectbox("Викладач", options=active_teachers)
-with col_d_select:
-    limit_days = st.multiselect(
-        "Дні тижня", 
-        options=["Всі дні"] + ACTIVE_DAYS,
-        default=["Понеділок"]
-    )
-with col_s_select:
-    limit_slots = st.multiselect(
-        "Недоступні пари", 
-        options=["Всі пари"] + [s['label'] for s in SLOT_DETAILS[:slots_count]],
-        default=["0 пара"]
-    )
-with col_btn:
-    st.write(" ")
-    st.write(" ")
-    if st.button("Додати обмеження"):
-        if limit_teacher and limit_days and limit_slots:
-            target_days = ACTIVE_DAYS if "Всі дні" in limit_days else limit_days
-            for d_item in target_days:
-                st.session_state.teacher_limits.append({
-                    "Викладач": limit_teacher,
-                    "День": d_item,
-                    "Пари": ", ".join(limit_slots)
-                })
-            st.rerun()
+default_limits = pd.DataFrame([
+    {
+        "Викладач": active_teachers[0] if active_teachers else "Черненко В.П.",
+        "День тижня": "Вівторок",
+        "Недоступні пари": ["Всі пари"]
+    },
+    {
+        "Викладач": active_teachers[0] if active_teachers else "Черненко В.П.",
+        "День тижня": "Середа",
+        "Недоступні пари": ["4 пара (18:05 - 19:15)"]
+    }
+])
 
-if st.session_state.teacher_limits:
-    limits_df = pd.DataFrame(st.session_state.teacher_limits)
-    st.dataframe(limits_df, use_container_width=True)
-    if st.button("Очистити всі обмеження"):
-        st.session_state.teacher_limits = []
-        st.rerun()
-else:
-    limits_df = pd.DataFrame(columns=["Викладач", "День", "Пари"])
+limits_df = st.data_editor(
+    default_limits,
+    num_rows="dynamic",
+    column_config={
+        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
+        "День тижня": st.column_config.SelectboxColumn(options=["Всі дні"] + ACTIVE_DAYS, required=True),
+        "Недоступні пари": st.column_config.MultiselectColumn(options=["Всі пари"] + ACTIVE_SLOT_OPTIONS, required=True)
+    },
+    use_container_width=True,
+    key="limits_editor_grid"
+)
 
-# 4. Навчальний план дисциплін (З опціями Онлайн та Потокова лекція)
+# 4. Навчальний план дисциплін (з випадаючим списком груп)
 st.markdown("### 4. Навчальний план дисциплін")
-st.caption("Для потокових предметів вкажіть кілька груп через кому (наприклад: ДО-11Б, ДО-21Б) та оберіть 'Потокова лекція: Так'.")
+st.caption("Клікніть на 'Групи', щоб обрати одну або кілька груп зі списку. Якщо лекція потокова — позначте 'Потокова лекція?: Так'.")
 
 default_plan = pd.DataFrame([
     {
-        "Група": active_groups[0],
+        "Групи": ["ПО-11Б", "ДО-11Б"],
+        "Предмет": "Історія",
+        "Викладач": "Шкляєва Г.О.",
+        "Годин на семестр": 30,
+        "Формат": "Очно",
+        "Потокова лекція?": "Так",
+        "Аудиторія": "32 аудиторія"
+    },
+    {
+        "Групи": ["ПО-11Б"],
         "Предмет": "Анатомія та гігієна",
-        "Викладач": active_teachers[1] if len(active_teachers) > 1 else active_teachers[0],
+        "Викладач": "Кулікова Т.В.",
         "Годин на семестр": 30,
         "Формат": "Очно",
         "Потокова лекція?": "Ні",
-        "Аудиторія": active_rooms[0]
+        "Аудиторія": "1 аудиторія"
     }
 ])
 
@@ -149,7 +148,7 @@ curriculum_df = st.data_editor(
     default_plan,
     num_rows="dynamic",
     column_config={
-        "Група": st.column_config.TextColumn(required=True, help="Вкажіть 1 групу або кілька через кому для потоку"),
+        "Групи": st.column_config.MultiselectColumn(options=active_groups, required=True, help="Оберіть групи зі списку"),
         "Предмет": st.column_config.TextColumn(required=True),
         "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
         "Годин на семестр": st.column_config.NumberColumn(min_value=10, max_value=300, step=10, default=30, required=True),
@@ -158,62 +157,102 @@ curriculum_df = st.data_editor(
         "Аудиторія": st.column_config.SelectboxColumn(options=active_rooms, required=True)
     },
     use_container_width=True,
-    key="curriculum_editor"
+    key="curriculum_editor_grid"
 )
 
-# Функція підсвічування осередків розкладу
+# Функція кольорового підсвічування осередків
 def style_schedule_grid(val):
     if not isinstance(val, str) or val == "-" or not val:
         return ""
     val_upper = val.upper()
     if "ОНЛАЙН" in val_upper:
-        return "background-color: #CCFFFF; color: #000000; font-weight: bold;"  # Блакитний
+        return "background-color: #CCFFFF; color: #000000; font-weight: bold;"
     elif "ПРАКТИКА" in val_upper:
-        return "background-color: #E6E6FA; color: #000000; font-weight: bold;"  # Лаванда
+        return "background-color: #E6E6FA; color: #000000; font-weight: bold;"
     elif "ПОТІК" in val_upper:
-        return "background-color: #D5E8D4; color: #000000; font-weight: bold;"  # Зелений
+        return "background-color: #D5E8D4; color: #000000; font-weight: bold;"
     elif "КОМП" in val_upper:
-        return "background-color: #FFF2CC; color: #000000; font-weight: bold;"  # Жовтий
+        return "background-color: #FFF2CC; color: #000000; font-weight: bold;"
     else:
         return "background-color: #F5F5F5; color: #000000;"
 
 # Математичний алгоритм генерації
-def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, grp_df, lim_df, plan_df):
+def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, slot_opts, grp_df, lim_df, plan_df):
     if grp_df.empty or plan_df.empty:
         return None, "Будь ласка, заповніть групи та навчальний план."
 
     model = CpModel()
-    lessons = []
-    lesson_id = 0
-
     all_registered_groups = [g for g in grp_df["Група"].dropna().unique().tolist() if str(g).strip()]
 
+    # 1. Первинний збір занять з таблиці
+    raw_lessons = []
     for _, row in plan_df.iterrows():
-        g_str = str(row.get("Група", "")).strip()
+        g_raw = row.get("Групи", [])
+        if isinstance(g_raw, list):
+            g_list = [str(g).strip() for g in g_raw if str(g).strip()]
+        elif isinstance(g_raw, str):
+            g_list = [g.strip() for g in g_raw.split(",") if g.strip()]
+        else:
+            g_list = []
+
         subj = str(row.get("Предмет", "")).strip()
         teacher = str(row.get("Викладач", "")).strip()
         hours = float(row.get("Годин на семестр", 30)) if pd.notnull(row.get("Годин на семестр")) else 30
         fmt = str(row.get("Формат", "Очно")).strip()
-        is_stream = str(row.get("Потокова лекція?", "Ні")).strip() == "Так"
+        is_stream = str(row.get("Потокова лекція?", "Ні")).strip() == "Так" or len(g_list) > 1
         room = str(row.get("Аудиторія", "")).strip()
 
-        if not g_str or not subj or g_str == "None" or subj == "None":
+        if not g_list or not subj or subj == "None":
             continue
 
-        # Парсинг кількох груп, якщо потік
-        target_groups = [g.strip() for g in g_str.split(",") if g.strip()]
+        raw_lessons.append({
+            "groups": g_list,
+            "subject": subj,
+            "teacher": teacher,
+            "hours": hours,
+            "fmt": fmt,
+            "is_stream": is_stream,
+            "room": room
+        })
 
-        pairs_per_week = max(1, int(round(hours / (2.0 * w_cnt))))
+    # 2. Консолідація потокових лекцій (об'єднання занять однакових викладачів та предметів)
+    stream_dict = {}
+    non_stream_lessons = []
 
+    for item in raw_lessons:
+        if item["is_stream"]:
+            key = (item["teacher"], item["subject"], item["room"], item["fmt"])
+            if key not in stream_dict:
+                stream_dict[key] = {
+                    "groups": set(item["groups"]),
+                    "subject": item["subject"],
+                    "teacher": item["teacher"],
+                    "hours": item["hours"],
+                    "fmt": item["fmt"],
+                    "is_stream": True,
+                    "room": item["room"]
+                }
+            else:
+                stream_dict[key]["groups"].update(item["groups"])
+        else:
+            non_stream_lessons.append(item)
+
+    final_specs = list(stream_dict.values()) + non_stream_lessons
+
+    # Розбиття на тижневі пари
+    lessons = []
+    lesson_id = 0
+    for spec in final_specs:
+        pairs_per_week = max(1, int(round(spec["hours"] / (2.0 * w_cnt))))
         for _ in range(pairs_per_week):
             lessons.append({
                 "id": lesson_id,
-                "groups": target_groups,
-                "subject": subj,
-                "teacher": teacher,
-                "fmt": fmt,
-                "is_stream": is_stream,
-                "room": room
+                "groups": list(spec["groups"]),
+                "subject": spec["subject"],
+                "teacher": spec["teacher"],
+                "fmt": spec["fmt"],
+                "is_stream": spec["is_stream"],
+                "room": spec["room"]
             })
             lesson_id += 1
 
@@ -226,18 +265,18 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, grp_df
             for s in range(s_cnt):
                 x[l["id"], d, s] = model.NewBoolVar(f'x_{l["id"]}_{d}_{s}')
 
-    # 1. Рівно 1 пара на тиждень
+    # Обмеження 1: Рівно 1 пара на тиждень
     for l in lessons:
         model.Add(sum(x[l["id"], d, s] for d in range(d_cnt) for s in range(s_cnt)) == 1)
 
-    # 2. Перевірка накладок для кожної окремої групи
+    # Обмеження 2: Не більше 1 пари у кожної групи одночасно
     for g in all_registered_groups:
         g_lessons = [l for l in lessons if g in l["groups"]]
         for d in range(d_cnt):
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in g_lessons) <= 1)
 
-    # 3. Обмеження практики
+    # Обмеження 3: Дні практики
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
         p_d = str(g_row.get("День практики", "Немає")).strip()
@@ -248,24 +287,42 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, grp_df
                 for s in range(s_cnt):
                     model.Add(x[l["id"], p_idx, s] == 0)
 
-    # 4. Обмеження викладачів
+    # Обмеження 4: Недоступність викладачів із таблиці
     if not lim_df.empty:
         for _, lim_row in lim_df.iterrows():
             t_n = str(lim_row.get("Викладач", "")).strip()
-            l_d = str(lim_row.get("День", "")).strip()
-            l_s_str = str(lim_row.get("Пари", "")).strip()
+            l_d = lim_row.get("День тижня", "")
+            l_s = lim_row.get("Недоступні пари", [])
 
-            if t_n and l_d in day_names:
-                d_idx = day_names.index(l_d)
-                t_lessons = [l for l in lessons if l["teacher"] == t_n]
+            if not t_n or t_n == "None":
+                continue
 
+            target_days_indices = list(range(d_cnt)) if l_d == "Всі дні" else ([day_names.index(l_d)] if l_d in day_names else [])
+            raw_slots = l_s if isinstance(l_s, list) else ([s.strip() for s in str(l_s).split(",") if s.strip()])
+
+            t_lessons = [l for l in lessons if l["teacher"] == t_n]
+            if not t_lessons:
+                continue
+
+            for d_idx in target_days_indices:
                 for s_idx in range(s_cnt):
-                    s_name = f"{s_idx} пара"
-                    if "Всі пари" in l_s_str or s_name in l_s_str:
+                    s_opt_name = slot_opts[s_idx]
+                    s_num_tag = f"{s_idx} пара"
+
+                    is_blocked = False
+                    if "Всі пари" in raw_slots:
+                        is_blocked = True
+                    else:
+                        for item in raw_slots:
+                            if item in s_opt_name or s_num_tag in item or item == s_opt_name:
+                                is_blocked = True
+                                break
+
+                    if is_blocked:
                         for l in t_lessons:
                             model.Add(x[l["id"], d_idx, s_idx] == 0)
 
-    # 5. Один викладач не проводитиме 2 пари одночасно
+    # Обмеження 5: Викладач не проводитиме 2 пари одночасно
     all_teachers = list(set([l["teacher"] for l in lessons if l["teacher"]]))
     for t in all_teachers:
         t_lessons = [l for l in lessons if l["teacher"] == t]
@@ -273,7 +330,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, grp_df
             for s in range(s_cnt):
                 model.Add(sum(x[l["id"], d, s] for l in t_lessons) <= 1)
 
-    # 6. Обмеження на комп'ютерні класи
+    # Обмеження 6: Комп'ютерний клас
     comp_lessons = [l for l in lessons if "Комп" in l["room"]]
     for d in range(d_cnt):
         for s in range(s_cnt):
@@ -286,7 +343,7 @@ def generate_schedule_matrix(w_cnt, d_cnt, s_cnt, day_names, slot_labels, grp_df
     if status not in [OPTIMAL, FEASIBLE]:
         return None, "Не вдалося розставити розклад. Занадто багато обмежень або замало вільних слотів."
 
-    # Побудова сітки розкладу
+    # Побудова підсумкової сітки
     rows_list = []
     
     prac_map = {}
@@ -327,7 +384,7 @@ if st.button("Згенерувати розклад", type="primary"):
     with st.spinner("Обчислення оптимального розкладу..."):
         res_matrix, err = generate_schedule_matrix(
             weeks_count, days_count, slots_count, 
-            ACTIVE_DAYS, ACTIVE_SLOTS, 
+            ACTIVE_DAYS, ACTIVE_SLOTS, ACTIVE_SLOT_OPTIONS,
             groups_df, limits_df, curriculum_df
         )
     
