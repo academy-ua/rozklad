@@ -239,4 +239,111 @@ def generate_fast_schedule():
             if rm == "✨ Автоматичний підбір з фонду":
                 rm = "ОНЛАЙН" if s["fmt"] == "Онлайн" else "1 авд."
                 for ri, rname in enumerate(auto_rooms):
-                    if (s["id"], p_t, d_t
+                    if (s["id"], p_t, d_t, sl_t, ri) in room_vars and solver.Value(room_vars[s["id"], p_t, d_t, sl_t, ri]) == 1:
+                        rm = rname; break
+            res.append({"week": w, "day": ACTIVE_DAYS[d_t], "slot_idx": sl_t, "slot_label": ACTIVE_SLOTS[sl_t], "groups": s["groups"], "subject": s["subject"], "teacher": s["teacher"], "room": rm, "fmt": s["fmt"]})
+    return res, None
+
+# --- ВІЗУАЛ ---
+st.markdown("---")
+if st.button("🚀 Згенерувати розклад", type="primary", use_container_width=True):
+    with st.spinner("Балансування навантаження груп..."):
+        records, err = generate_fast_schedule()
+        if err: st.error(err)
+        else:
+            st.session_state.schedule_data = {"records": records, "max_weeks": max_weeks, "active_groups": active_groups, "active_teachers": base_teachers}
+            st.success("Розклад сформовано та збалансовано!")
+
+if st.session_state.schedule_data:
+    data = st.session_state.schedule_data
+    def style_c(v):
+        if not v or v == "-": return ""
+        if "ОНЛАЙН" in v.upper(): return "background-color: #CCFFFF; white-space: pre-wrap;"
+        return "background-color: #f5f5f5; white-space: pre-wrap;"
+
+    view = st.radio("Режим відображення:", ["По тижнях", "Викладач"], horizontal=True)
+
+    if view == "По тижнях":
+        w_sel = st.selectbox("Тиждень:", range(1, data["max_weeks"]+1))
+        grid = []
+        for d in ACTIVE_DAYS:
+            for sl in range(slots_count):
+                row = {"День": d, "Пара": ACTIVE_SLOTS[sl]}
+                for g in data["active_groups"]:
+                    cell = "-"
+                    for r in data["records"]:
+                        if r["week"] == w_sel and r["day"] == d and r["slot_idx"] == sl and g in r["groups"]:
+                            cell = f"{r['subject']}\n{r['teacher']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
+                            break
+                    row[g] = cell
+                grid.append(row)
+        st.dataframe(pd.DataFrame(grid).style.map(style_c), use_container_width=True, height=500)
+
+    elif view == "Викладач":
+        t_sel = st.selectbox("Викладач:", data["active_teachers"])
+        grid_t = []
+        for d in ACTIVE_DAYS:
+            for sl in range(slots_count):
+                row = {"День": d, "Пара": ACTIVE_SLOTS[sl]}
+                for w in range(1, data["max_weeks"] + 1):
+                    cell = "-"
+                    for r in data["records"]:
+                        if r["teacher"] == t_sel and r["week"] == w and r["day"] == d and r["slot_idx"] == sl:
+                            cell = f"{', '.join(r['groups'])}\n{r['subject']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
+                            break
+                    row[f"Тиждень {w}"] = cell
+                grid_t.append(row)
+        st.dataframe(pd.DataFrame(grid_t).style.map(style_c), use_container_width=True, height=500)
+
+    # EXCEL
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        cell_f = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'border': 1})
+        onl_f = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'border': 1, 'bg_color': '#CCFFFF'})
+        head_f = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center'})
+        for w in range(1, data["max_weeks"] + 1):
+            s_data = []
+            for d in ACTIVE_DAYS:
+                for sl in range(slots_count):
+                    row = {"День": d, "Пара": ACTIVE_SLOTS[sl].replace("\n", " ")}
+                    for g in data["active_groups"]:
+                        cell = "-"
+                        for r in data["records"]:
+                            if r["week"] == w and r["day"] == d and r["slot_idx"] == sl and g in r["groups"]:
+                                cell = f"{r['subject']}\n{r['teacher']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
+                                break
+                        row[g] = cell
+                    s_data.append(row)
+            df = pd.DataFrame(s_data); df.to_excel(writer, sheet_name=f"Тиждень {w}", index=False)
+            ws = writer.sheets[f"Тиждень {w}"]
+            for r_i in range(len(df)):
+                for c_i in range(len(df.columns)):
+                    val = str(df.iloc[r_i, c_i])
+                    ws.write(r_i+1, c_i, val, onl_f if "ОНЛАЙН" in val else cell_f)
+            for c_i, col in enumerate(df.columns):
+                ws.write(0, c_i, col, head_f); ws.set_column(c_i, c_i, 22)
+        for t in data["active_teachers"]:
+            t_d = []
+            for d in ACTIVE_DAYS:
+                for sl in range(slots_count):
+                    row = {"День": d, "Пара": ACTIVE_SLOTS[sl].replace("\n", " ")}
+                    for w in range(1, data["max_weeks"] + 1):
+                        cell = "-"
+                        for r in data["records"]:
+                            if r["teacher"] == t and r["week"] == w and r["day"] == d and r["slot_idx"] == sl:
+                                cell = f"{', '.join(r['groups'])}\n{r['subject']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
+                                break
+                        row[f"Тиждень {w}"] = cell
+                    t_d.append(row)
+            df_t = pd.DataFrame(t_d); sn = "".join([c for c in t if c.isalnum() or c in " ."])[:30]
+            df_t.to_excel(writer, sheet_name=sn if sn else "Викл", index=False)
+            ws = writer.sheets[sn if sn else "Викл"]
+            for r_i in range(len(df_t)):
+                for c_i in range(len(df_t.columns)):
+                    val = str(df_t.iloc[r_i, c_i])
+                    ws.write(r_i+1, c_i, val, onl_f if "ОНЛАЙН" in val else cell_f)
+            for c_i, col in enumerate(df_t.columns):
+                ws.write(0, c_i, col, head_f); ws.set_column(c_i, c_i, 18)
+
+    st.download_button(label="📥 Завантажити повний розклад у Excel", data=output.getvalue(), file_name="Academy_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
