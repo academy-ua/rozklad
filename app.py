@@ -46,11 +46,12 @@ if 'cfg_groups' not in st.session_state:
         {"Група": "ПО-11Б", "Кількість тижнів": 15, "День практики": "Немає"}
     ])
 
+# Змінні збережені через key автоматично зв'язуються з віджетами
 if 'cfg_teachers' not in st.session_state:
     st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1\n15\n32\n27-А Комп'ютерний клас\nОНЛАЙН"
+    st.session_state.cfg_rooms = "1 авдиторія\n15 авдиторія\n32 авдиторія\n27-А Комп'ютерний клас\nОНЛАЙН"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
@@ -216,19 +217,17 @@ with col_t:
     st.markdown("**Список викладачів**")
     teachers_text = st.text_area(
         "ПІБ викладачів (кожен з нового рядка)",
-        st.session_state.cfg_teachers,
-        height=140
+        height=140,
+        key="cfg_teachers"
     )
-    st.session_state.cfg_teachers = teachers_text
 
 with col_r:
     st.markdown("**Аудиторний фонд**")
     rooms_text = st.text_area(
         "Аудиторії (кожна з нового рядка)",
-        st.session_state.cfg_rooms,
-        height=140
+        height=140,
+        key="cfg_rooms"
     )
-    st.session_state.cfg_rooms = rooms_text
 
 # Зчитування активних груп з поточного стану віджета
 active_groups_df = groups_df.dropna(subset=["Група"]).copy() if not groups_df.empty else pd.DataFrame()
