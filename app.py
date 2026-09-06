@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import json
+from collections import defaultdict
 from ortools.sat.python.cp_model import CpModel, CpSolver, OPTIMAL, FEASIBLE
 
 st.set_page_config(page_title="Генератор розкладу академії", layout="wide")
@@ -641,34 +642,37 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                         model.Add(t_day_count != 1)
 
     # Захист від конфліктів фізичних аудиторій (жодна аудиторія не може бути зайнята двома різними речами одночасно)
-    for w in range(max_w):
-        for d in range(d_cnt):
-            for s in range(s_cnt):
-                # Перевіряємо кожну аудиторію з фонду
-                for r in auto_pool:
-                    # Збираємо всі заняття, які претендують на цю аудиторію (або явно вказано, або обрано автопідбором)
-                    lessons_using_room = []
-                    for l in semester_lessons:
-                        if w < l["eff_weeks"]:
-                            if l["room_choice"] == r:
-                                lessons_using_room.append(l)
-                            elif l["room_choice"] == "✨ Автоматичний підбір з фонду" and (l["id"], w, d, s, r) in room_vars:
-                                # Використовуємо булеву змінну вибору кімнати
-                                pass # Обробляємо нижче через суму room_vars
+    # ОПТИМІЗОВАНО: раніше для КОЖНОЇ комбінації (тиждень, день, пара, аудиторія)
+    # код проходив по ВСЬОМУ списку занять, щоб перевірити, чи претендує воно
+    # на цю аудиторію. Складність була ~ тижні × дні × пари × аудиторії × заняття,
+    # яка при більшому навчальному плані вибухала і будувалась КІЛЬКА ХВИЛИН ще
+    # ДО того, як почав працювати сам розв'язувач (30-секундний ліміт стосується
+    # лише solver.Solve(), а не побудови моделі, тому "зависання" відбувалось
+    # саме тут). Тепер проходимо по заняттях лише один раз і одразу групуємо
+    # змінні за (тиждень, день, пара, аудиторія).
+    room_occupancy = defaultdict(list)
 
-                    # ВИПРАВЛЕНО: раніше через "l_list[:1]" у сумі враховувалась
-                    # лише перша пара кожного предмета/викладача, тому наступні
-                    # пари того ж предмета з явно закріпленою аудиторією не
-                    # перевірялись на накладки з іншими предметами в тій самій
-                    # аудиторії. Тепер враховуємо усі заняття, закріплені за цією
-                    # аудиторією в цей конкретний час.
-                    fixed_sum = sum(x[l["id"], w, d, s] for l in lessons_using_room)
-                    
-                    # Сума автопідбору для цієї аудиторії в цей час
-                    auto_sum = sum(room_vars[l["id"], w, d, s, r] for l in semester_lessons if w < l["eff_weeks"] and (l["id"], w, d, s, r) in room_vars)
-                    
-                    # Загальна зайнятість аудиторії r не може перевищувати 1
-                    model.Add(fixed_sum + auto_sum <= 1)
+    for l in semester_lessons:
+        eff_w = l["eff_weeks"]
+        if l["room_choice"] in auto_pool:
+            # Явно закріплена конкретна аудиторія з фонду
+            for w in range(eff_w):
+                for d in range(d_cnt):
+                    for s in range(s_cnt):
+                        room_occupancy[(w, d, s, l["room_choice"])].append(x[l["id"], w, d, s])
+        elif l["room_choice"] == "✨ Автоматичний підбір з фонду" and l["fmt"] != "Онлайн":
+            for w in range(eff_w):
+                for d in range(d_cnt):
+                    for s in range(s_cnt):
+                        for r in auto_pool:
+                            key = (l["id"], w, d, s, r)
+                            if key in room_vars:
+                                room_occupancy[(w, d, s, r)].append(room_vars[key])
+
+    # Загальна зайнятість кожної аудиторії в кожен конкретний момент не може перевищувати 1
+    for vars_in_room in room_occupancy.values():
+        if len(vars_in_room) > 1:
+            model.Add(sum(vars_in_room) <= 1)
 
     penalties = []
     slot_penalties = {0: 10, 1: 0, 2: 0, 3: 0, 4: 100}
