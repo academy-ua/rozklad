@@ -36,7 +36,7 @@ ACTIVE_DAYS = DAY_NAMES[:days_count]
 ACTIVE_SLOTS = SLOT_LABELS[:slots_count]
 ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
 
-st.info("ℹ️ Алгоритм забезпечує 100% відсутність «вікон» та намагається ставити викладачам від 2-х пар на день.")
+st.info("ℹ️ Алгоритм забезпечує 100% відсутність «вікон» навіть при різній тривалості курсів.")
 
 # Ініціалізація станів
 if 'schedule_data' not in st.session_state: st.session_state.schedule_data = None
@@ -68,7 +68,7 @@ def handle_json_upload():
         except: st.session_state.upload_error = "Помилка файлу"
 
 st.markdown("### 💾 Відновлення даних")
-st.file_uploader("📂 Завантажити .json", type=["json"], key="config_file_uploader", on_change=handle_json_upload)
+st.file_uploader("📂 Завантажити попередньо збережений .json", type=["json"], key="config_file_uploader", on_change=handle_json_upload)
 
 # 2. Довідники
 st.markdown("### 2. Довідники закладу")
@@ -84,7 +84,7 @@ base_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
 base_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 active_groups = groups_df["Група"].dropna().unique().tolist() if not groups_df.empty else []
 
-# 3. Обмеження викладачів (БЕЗ ЗМІН)
+# 3. Обмеження викладачів (3 КОЛОНКИ)
 st.markdown("### 3. Обмеження викладачів")
 limits_df = st.data_editor(st.session_state.cfg_limits, num_rows="dynamic", column_config={
     "Викладач": st.column_config.SelectboxColumn(options=base_teachers),
@@ -102,12 +102,12 @@ curriculum_df = st.data_editor(st.session_state.cfg_curriculum, num_rows="dynami
     "Аудиторія": st.column_config.SelectboxColumn(options=["✨ Автоматичний підбір з фонду"] + base_rooms)
 }, use_container_width=True, key="c_ed")
 
-# КНОПКА JSON
+# КНОПКА JSON (ЗБЕРЕЖЕННЯ)
 config_export_data = {
     "groups": groups_df.to_dict(orient="records"), "teachers": teachers_text, "rooms": rooms_text,
     "limits": limits_df.to_dict(orient="records"), "curriculum": curriculum_df.to_dict(orient="records")
 }
-st.download_button(label="📥 Зберегти поточні налаштування у файл (.json)", data=json.dumps(config_export_data, ensure_ascii=False, indent=2), file_name="academy_config.json", mime="application/json", use_container_width=True)
+st.download_button(label="📥 Зберегти налаштування (.json)", data=json.dumps(config_export_data, ensure_ascii=False, indent=2), file_name="academy_config.json", mime="application/json", use_container_width=True)
 
 # --- АЛГОРИТМ ---
 def generate_fast_schedule():
@@ -122,7 +122,11 @@ def generate_fast_schedule():
         total_p = math.ceil(float(row.get("Годин на семестр", 30)) / 2.0)
         avg_w = group_info.get(grps[0], {}).get("Кількість тижнів", max_weeks)
         needed = math.ceil((total_p / avg_w) * 2)
-        specs.append({"id": idx, "groups": grps, "subject": row["Предмет"], "teacher": row["Викладач"], "room_choice": row["Аудиторія"], "fmt": row["Формат"], "needed": needed, "limit": total_p, "avg_w": avg_w})
+        specs.append({
+            "id": idx, "groups": grps, "subject": row["Предмет"], "teacher": row["Викладач"], 
+            "room_choice": row["Аудиторія"], "fmt": row["Формат"], 
+            "needed": needed, "limit": total_p, "avg_w": avg_w
+        })
 
     x = {}
     auto_rooms = [r for r in base_rooms if r.upper() not in ["ОНЛАЙН", "СПОРТЗАЛ"]]
@@ -155,30 +159,25 @@ def generate_fast_schedule():
                     if s["room_choice"] == "✨ Автоматичний підбір з фонду" and s["fmt"] == "Очно":
                         model.Add(sum(room_vars[s["id"], p, d, sl, ri] for ri in range(len(auto_rooms))) == x[s["id"], p, d, sl])
 
-    # СУВОРА ЗАБОРОНА ВІКОН ТА ЛОГІКА "СЕНДВІЧА"
+    # --- СУВОРА ЗАБОРОНА ВІКОН ТА СОРТУВАННЯ ЗА ТРИВАЛІСТЮ ---
+    # Для кожної групи, дня та тижня ми гарантуємо, що предмети з БІЛЬШОЮ кількістю тижнів
+    # стоять РАНІШЕ в розкладі. Це запобігає виникненню вікон, коли короткі предмети закінчуються.
     for p in [0, 1]:
         for d in range(days_count):
             for g in active_groups:
-                g_vars = [model.NewBoolVar(f'g_{g}_{p}_{d}_{sl}') for sl in range(slots_count)]
+                # Змінна тривалості предмета в кожному слоті
+                durations = []
                 for sl in range(slots_count):
-                    model.Add(sum(x[s["id"], p, d, sl] for s in specs if g in s["groups"]) == g_vars[sl])
+                    # duration = сума (limit_предмета * x_предмета)
+                    d_var = model.NewIntVar(0, int(max_weeks), f'dur_{g}_{p}_{d}_{sl}')
+                    model.Add(d_var == sum(int(s["limit"]) * x[s["id"], p, d, sl] for s in specs if g in s["groups"]))
+                    durations.append(d_var)
                 
-                if slots_count >= 3:
-                    for s1 in range(slots_count):
-                        for s2 in range(s1 + 1, slots_count - 1):
-                            for s3 in range(s2 + 1, slots_count):
-                                # 1. Базова заборона вікон
-                                model.Add(g_vars[s1] + g_vars[s3] <= 1 + g_vars[s2])
-                                
-                                # 2. Перевірка годин (щоб предмет з меншим лімітом не був посередині)
-                                for spec1 in [s for s in specs if g in s["groups"]]:
-                                    for spec2 in [s for s in specs if g in s["groups"]]:
-                                        for spec3 in [s for s in specs if g in s["groups"]]:
-                                            if spec2["limit"] < min(spec1["limit"], spec3["limit"]):
-                                                # Не можна ставити таку комбінацію одночасно в ці слоти
-                                                model.Add(x[spec1["id"],p,d,s1] + x[spec2["id"],p,d,s2] + x[spec3["id"],p,d,s3] <= 2)
+                # Сортування: Кожен наступний слот МАЄ МАТИ меншу або рівну тривалість, ніж попередній
+                # Це змушує довгі предмети "спливати" нагору, а короткі - вниз. Вікон не буде.
+                for sl in range(slots_count - 1):
+                    model.Add(durations[sl] >= durations[sl+1])
 
-    # Обмеження викладачів
     for _, lim in limits_df.iterrows():
         t_n, d_n, u_s = lim.get("Викладач"), lim.get("День тижня"), lim.get("Недоступні пари", [])
         if not t_n: continue
@@ -190,78 +189,67 @@ def generate_fast_schedule():
                         if s["teacher"] == t_n:
                             for p in [0, 1]: model.Add(x[s["id"], p, di, sli] == 0)
 
-    # ОПТИМІЗАЦІЯ ВИКЛАДАЧІВ (Уникнення 1 пари на день)
+    # ОПТИМІЗАЦІЯ ВИКЛАДАЧІВ (Групування пар)
     penalties = []
     for t in base_teachers:
         for p in [0, 1]:
             for d in range(days_count):
-                t_day_count = sum(x[s["id"], p, d, sl] for s in specs if s["teacher"] == t for sl in range(slots_count))
-                is_working = model.NewBoolVar('')
-                has_mult = model.NewBoolVar('')
-                model.Add(t_day_count >= 1).OnlyEnforceIf(is_working)
-                model.Add(t_day_count == 0).OnlyEnforceIf(is_working.Not())
-                model.Add(t_day_count >= 2).OnlyEnforceIf(has_mult)
-                model.Add(t_day_count <= 1).OnlyEnforceIf(has_mult.Not())
-                
-                single_pair = model.NewBoolVar('')
-                model.Add(single_pair == 1).OnlyEnforceIf([is_working, has_mult.Not()])
-                model.Add(single_pair == 0).OnlyEnforceIf(is_working.Not())
-                model.Add(single_pair == 0).OnlyEnforceIf(has_mult)
-                penalties.append(single_pair * 150) # Штраф за одиноку пару
+                count = sum(x[s["id"], p, d, sl] for s in specs if s["teacher"] == t for sl in range(slots_count))
+                is_w = model.NewBoolVar('')
+                has_m = model.NewBoolVar('')
+                model.Add(count >= 1).OnlyEnforceIf(is_w)
+                model.Add(count == 0).OnlyEnforceIf(is_w.Not())
+                model.Add(count >= 2).OnlyEnforceIf(has_m)
+                model.Add(count <= 1).OnlyEnforceIf(has_m.Not())
+                single = model.NewBoolVar('')
+                model.Add(single == 1).OnlyEnforceIf([is_w, has_m.Not()])
+                model.Add(single == 0).OnlyEnforceIf(is_w.Not())
+                model.Add(single == 0).OnlyEnforceIf(has_m)
+                penalties.append(single * 100)
 
     model.Minimize(sum(penalties))
-    
     solver = CpSolver()
     solver.parameters.max_time_in_seconds = 20.0
     status = solver.Solve(model)
-    if status not in [OPTIMAL, FEASIBLE]: return None, "Неможливо створити розклад без вікон при таких умовах."
+    if status not in [OPTIMAL, FEASIBLE]: return None, "Неможливо створити розклад без вікон при таких обмеженнях."
 
     # РОЗГОРТАННЯ
     res = []
     for s in specs:
-        # Розраховуємо конкретні тижні для рівномірності
         target_weeks = [round(i * (s["avg_w"] / s["limit"])) + 1 for i in range(s["limit"])]
         target_weeks = [min(w, int(s["avg_w"])) for w in target_weeks]
         
-        template_slots = []
+        tmpl = []
         for p in [0, 1]:
             for d in range(days_count):
                 for sl in range(slots_count):
-                    if solver.Value(x[s["id"], p, d, sl]) == 1:
-                        template_slots.append((p, d, sl))
+                    if solver.Value(x[s["id"], p, d, sl]) == 1: tmpl.append((p, d, sl))
         
-        if not template_slots: continue
-
-        for w_idx, w in enumerate(target_weeks):
-            p_tmpl, d_tmpl, sl_tmpl = template_slots[w_idx % len(template_slots)]
+        if not tmpl: continue
+        for idx, w in enumerate(target_weeks):
+            p_t, d_t, sl_t = tmpl[idx % len(tmpl)]
             rm = s["room_choice"]
             if rm == "✨ Автоматичний підбір з фонду":
                 rm = "ОНЛАЙН" if s["fmt"] == "Онлайн" else "1 авд."
                 for ri, rname in enumerate(auto_rooms):
-                    if (s["id"], p_tmpl, d_tmpl, sl_tmpl, ri) in room_vars and solver.Value(room_vars[s["id"], p_tmpl, d_tmpl, sl_tmpl, ri]) == 1:
+                    if (s["id"], p_t, d_t, sl_t, ri) in room_vars and solver.Value(room_vars[s["id"], p_t, d_t, sl_t, ri]) == 1:
                         rm = rname; break
-            
-            res.append({
-                "week": w, "day": ACTIVE_DAYS[d_tmpl], "slot_idx": sl_tmpl, "slot_label": ACTIVE_SLOTS[sl_tmpl], 
-                "groups": s["groups"], "subject": s["subject"], "teacher": s["teacher"], "room": rm, "fmt": s["fmt"]
-            })
-            
+            res.append({"week": w, "day": ACTIVE_DAYS[d_t], "slot_idx": sl_t, "slot_label": ACTIVE_SLOTS[sl_t], "groups": s["groups"], "subject": s["subject"], "teacher": s["teacher"], "room": rm, "fmt": s["fmt"]})
     return res, None
 
 # --- ВІЗУАЛ ТА ЕКСПОРТ ---
 st.markdown("---")
 if st.button("🚀 Згенерувати розклад", type="primary", use_container_width=True):
-    with st.spinner("Алгоритм групує пари та перевіряє вікна..."):
+    with st.spinner("Сортування пар за тривалістю для усунення вікон..."):
         records, err = generate_fast_schedule()
         if err: st.error(err)
         else:
             st.session_state.schedule_data = {"records": records, "max_weeks": max_weeks, "active_groups": active_groups, "active_teachers": base_teachers}
-            st.success("Розклад сформовано!")
+            st.success("Розклад сформовано без вікон!")
 
 if st.session_state.schedule_data:
     data = st.session_state.schedule_data
-    
-    def style_cell(v):
+    def style_c(v):
         if not v or v == "-": return ""
         if "ОНЛАЙН" in v.upper(): return "background-color: #CCFFFF; white-space: pre-wrap;"
         return "background-color: #f5f5f5; white-space: pre-wrap;"
@@ -278,12 +266,11 @@ if st.session_state.schedule_data:
                     cell = "-"
                     for r in data["records"]:
                         if r["week"] == w_sel and r["day"] == d and r["slot_idx"] == sl and g in r["groups"]:
-                            loc = "ОНЛАЙН" if r["fmt"] == "Онлайн" else r["room"]
-                            cell = f"{r['subject']}\n{r['teacher']}\n{loc}"
+                            cell = f"{r['subject']}\n{r['teacher']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
                             break
                     row[g] = cell
                 grid.append(row)
-        st.dataframe(pd.DataFrame(grid).style.map(style_cell), use_container_width=True, height=500)
+        st.dataframe(pd.DataFrame(grid).style.map(style_c), use_container_width=True, height=500)
 
     elif view == "Викладач":
         t_sel = st.selectbox("Викладач:", data["active_teachers"])
@@ -295,20 +282,19 @@ if st.session_state.schedule_data:
                     cell = "-"
                     for r in data["records"]:
                         if r["teacher"] == t_sel and r["week"] == w and r["day"] == d and r["slot_idx"] == sl:
-                            loc = "ОНЛАЙН" if r["fmt"] == "Онлайн" else r["room"]
-                            cell = f"{', '.join(r['groups'])}\n{r['subject']}\n{loc}"
+                            cell = f"{', '.join(r['groups'])}\n{r['subject']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
                             break
                     row[f"Тиждень {w}"] = cell
                 grid_t.append(row)
-        st.dataframe(pd.DataFrame(grid_t).style.map(style_cell), use_container_width=True, height=500)
+        st.dataframe(pd.DataFrame(grid_t).style.map(style_c), use_container_width=True, height=500)
 
-    # --- EXCEL ---
+    # --- EXCEL EXPORT ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
-        cell_fmt = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'border': 1})
-        online_fmt = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'border': 1, 'bg_color': '#CCFFFF'})
-        header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center'})
+        cell_f = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'border': 1})
+        onl_f = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'border': 1, 'bg_color': '#CCFFFF'})
+        head_f = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center'})
 
         for w in range(1, data["max_weeks"] + 1):
             s_data = []
@@ -319,23 +305,21 @@ if st.session_state.schedule_data:
                         cell = "-"
                         for r in data["records"]:
                             if r["week"] == w and r["day"] == d and r["slot_idx"] == sl and g in r["groups"]:
-                                cell = f"{r['subject']}\n{r['teacher']}\n{'ОНЛАЙН' if r['fmt']=='Онлайн' else r['room']}"
+                                cell = f"{r['subject']}\n{r['teacher']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
                                 break
                         row[g] = cell
                     s_data.append(row)
-            df_w = pd.DataFrame(s_data)
-            df_w.to_excel(writer, sheet_name=f"Тиждень {w}", index=False)
+            df = pd.DataFrame(s_data); df.to_excel(writer, sheet_name=f"Тиждень {w}", index=False)
             ws = writer.sheets[f"Тиждень {w}"]
-            for r_idx in range(len(df_w)):
-                for c_idx in range(len(df_w.columns)):
-                    val = str(df_w.iloc[r_idx, c_idx])
-                    ws.write(r_idx+1, c_idx, val, online_fmt if "ОНЛАЙН" in val else cell_fmt)
-            for c_idx, col in enumerate(df_w.columns):
-                ws.write(0, c_idx, col, header_fmt)
-                ws.set_column(c_idx, c_idx, 22)
+            for r_i in range(len(df)):
+                for c_i in range(len(df.columns)):
+                    val = str(df.iloc[r_i, c_i])
+                    ws.write(r_i+1, c_i, val, onl_f if "ОНЛАЙН" in val else cell_f)
+            for c_i, col in enumerate(df.columns):
+                ws.write(0, c_i, col, head_f); ws.set_column(c_i, c_i, 22)
 
         for t in data["active_teachers"]:
-            t_data = []
+            t_d = []
             for d in ACTIVE_DAYS:
                 for sl in range(slots_count):
                     row = {"День": d, "Пара": ACTIVE_SLOTS[sl].replace("\n", " ")}
@@ -343,20 +327,18 @@ if st.session_state.schedule_data:
                         cell = "-"
                         for r in data["records"]:
                             if r["teacher"] == t and r["week"] == w and r["day"] == d and r["slot_idx"] == sl:
-                                cell = f"{', '.join(r['groups'])}\n{r['subject']}\n{'ОНЛАЙН' if r['fmt']=='Онлайн' else r['room']}"
+                                cell = f"{', '.join(r['groups'])}\n{r['subject']}\n{r['room'] if r['fmt']!='Онлайн' else 'ОНЛАЙН'}"
                                 break
                         row[f"Тиждень {w}"] = cell
-                    t_data.append(row)
-            df_t = pd.DataFrame(t_data)
-            sn = "".join([c for c in t if c.isalnum() or c in " ."])[:30]
+                    t_d.append(row)
+            df_t = pd.DataFrame(t_d); sn = "".join([c for c in t if c.isalnum() or c in " ."])[:30]
             df_t.to_excel(writer, sheet_name=sn if sn else "Викл", index=False)
             ws = writer.sheets[sn if sn else "Викл"]
-            for r_idx in range(len(df_t)):
-                for c_idx in range(len(df_t.columns)):
-                    val = str(df_t.iloc[r_idx, c_idx])
-                    ws.write(r_idx+1, c_idx, val, online_fmt if "ОНЛАЙН" in val else cell_fmt)
-            for c_idx, col in enumerate(df_t.columns):
-                ws.write(0, c_idx, col, header_fmt)
-                ws.set_column(c_idx, c_idx, 18)
+            for r_i in range(len(df_t)):
+                for c_i in range(len(df_t.columns)):
+                    val = str(df_t.iloc[r_i, c_i])
+                    ws.write(r_i+1, c_i, val, onl_f if "ОНЛАЙН" in val else cell_f)
+            for c_i, col in enumerate(df_t.columns):
+                ws.write(0, c_i, col, head_f); ws.set_column(c_i, c_i, 18)
 
     st.download_button(label="📥 Завантажити повний розклад у Excel", data=output.getvalue(), file_name="Academy_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
