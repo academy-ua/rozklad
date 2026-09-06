@@ -47,7 +47,7 @@ if 'cfg_groups' not in st.session_state:
     ])
 
 if 'cfg_teachers' not in st.session_state:
-    st.session_state.cfg_teachers = "Усатенко В.М."
+    st.session_state.cfg_teachers = "Усатенко В.М.\nЧерненко В.П."
 
 if 'cfg_rooms' not in st.session_state:
     st.session_state.cfg_rooms = "1\n15\n27-А аудиторія\n32\n27-А Комп'ютерний клас\nОНЛАЙН"
@@ -65,7 +65,7 @@ if 'cfg_curriculum' not in st.session_state:
             "Викладач": "Усатенко В.М.",
             "Годин на семестр": 30,
             "Формат": "Очно",
-            "Потокова лекція": "Ні",
+            "Потокова лекція?": "Ні",
             "Аудиторія": "32"
         }
     ])
@@ -92,41 +92,65 @@ with col_imp:
                     if "Формат" in g_dict: del g_dict["Формат"]
                     if "Кількість тижнів" not in g_dict or pd.isnull(g_dict["Кількість тижнів"]):
                         g_dict["Кількість тижнів"] = max_weeks
+                    if "День практики" not in g_dict:
+                        g_dict["День практики"] = "Немає"
                     adapted_groups.append(g_dict)
 
-                # 2. Адаптація навчального плану (Група -> Групи, Аудиторія / Формат -> Аудиторія)
+                # 2. Адаптація викладачів та аудиторій
+                raw_t = config.get("teachers", "")
+                teachers_str = "\n".join(raw_t) if isinstance(raw_t, list) else str(raw_t)
+                
+                raw_r = config.get("rooms", "")
+                rooms_str = "\n".join(raw_r) if isinstance(raw_r, list) else str(raw_r)
+
+                # 3. Адаптація навчального плану (Група -> Групи, Дисципліна -> Предмет, Потокова лекція -> Потокова лекція?)
                 raw_curriculum = config.get("curriculum", [])
                 adapted_curriculum = []
                 for c_item in raw_curriculum:
                     c_dict = dict(c_item)
                     
-                    # Конвертація "Група"
-                    if "Група" in c_dict and ("Групи" not in c_dict or not c_dict["Групи"]):
-                        g_val = c_dict.pop("Група")
+                    # Групи
+                    g_val = c_dict.pop("Група", None)
+                    if "Групи" not in c_dict or not c_dict["Групи"]:
                         if isinstance(g_val, str):
                             c_dict["Групи"] = [g.strip() for g in g_val.split(",") if g.strip()]
                         elif isinstance(g_val, list):
                             c_dict["Групи"] = g_val
                         else:
                             c_dict["Групи"] = []
-                    elif "Групи" in c_dict:
-                        if isinstance(c_dict["Групи"], str):
-                            c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
+                    elif isinstance(c_dict["Групи"], str):
+                        c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
 
-                    # Конвертація "Аудиторія / Формат" -> "Аудиторія"
+                    # Назва предмета
+                    for subj_k in ["Дисципліна", "Назва предмета"]:
+                        if subj_k in c_dict:
+                            if "Предмет" not in c_dict or not c_dict["Предмет"]:
+                                c_dict["Предмет"] = c_dict.pop(subj_k)
+
+                    # Аудиторія
                     if "Аудиторія / Формат" in c_dict:
                         old_room = c_dict.pop("Аудиторія / Формат")
                         if "Аудиторія" not in c_dict or not c_dict["Аудиторія"]:
-                            c_dict["Аудиторія"] = str(old_room).strip() if pd.notnull(old_room) else "1 аудиторія"
+                            c_dict["Аудиторія"] = str(old_room).strip() if pd.notnull(old_room) else "1"
 
+                    # Потокова лекція
+                    if "Потокова лекція" in c_dict:
+                        old_stream = c_dict.pop("Потокова лекція")
+                        if "Потокова лекція?" not in c_dict:
+                            c_dict["Потокова лекція?"] = old_stream
+
+                    # Значення за замовчуванням
                     if "Формат" not in c_dict: c_dict["Формат"] = "Очно"
                     if "Потокова лекція?" not in c_dict: c_dict["Потокова лекція?"] = "Ні"
+                    if "Предмет" not in c_dict or not c_dict["Предмет"]: c_dict["Предмет"] = "Математика"
+                    if "Викладач" not in c_dict or not c_dict["Викладач"]: c_dict["Викладач"] = "Черненко В.П."
+                    if "Годин на семестр" not in c_dict or pd.isnull(c_dict["Годин на семестр"]): c_dict["Годин на семестр"] = 30
 
                     adapted_curriculum.append(c_dict)
 
                 st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
-                st.session_state.cfg_teachers = config.get("teachers", "")
-                st.session_state.cfg_rooms = config.get("rooms", "")
+                st.session_state.cfg_teachers = teachers_str
+                st.session_state.cfg_rooms = rooms_str
                 st.session_state.cfg_limits = pd.DataFrame(config.get("limits", []))
                 st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
                 st.session_state.last_processed_file = file_id
@@ -136,7 +160,7 @@ with col_imp:
                     if key in st.session_state:
                         del st.session_state[key]
 
-                st.success("Дані завантажено успішно!")
+                st.success("Дані успішно відновлено!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Помилка зчитування файлу: {e}")
@@ -175,25 +199,32 @@ with col_r:
         height=140
     )
 
-# Парсинг та гарантія того, що всі значення з плану є в довідниках
+# Парсинг довідників
 active_groups_df = groups_df.dropna(subset=["Група"]).copy()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()]
 
 active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
 active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 
-# Синхронізація списків з урахуванням відновленого плану
+# Синхронізація списків: гарантуємо, що абсолютно всі елементи з планів є у випадаючих списках
 if not st.session_state.cfg_curriculum.empty:
     for _, c_row in st.session_state.cfg_curriculum.iterrows():
         # Перевірка груп
         c_g_list = c_row.get("Групи", [])
         if isinstance(c_g_list, list):
             for cg in c_g_list:
-                if cg and cg not in active_groups: active_groups.append(cg)
+                if cg and str(cg).strip() not in active_groups:
+                    active_groups.append(str(cg).strip())
+        elif isinstance(c_g_list, str):
+            for cg in c_g_list.split(","):
+                if cg and str(cg).strip() not in active_groups:
+                    active_groups.append(str(cg).strip())
+
         # Перевірка викладача
         c_t = str(c_row.get("Викладач", "")).strip()
         if c_t and c_t not in active_teachers and c_t != "None":
             active_teachers.append(c_t)
+
         # Перевірка аудиторії
         c_r = str(c_row.get("Аудиторія", "")).strip()
         if c_r and c_r not in active_rooms and c_r != "None":
