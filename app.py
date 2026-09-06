@@ -21,7 +21,7 @@ SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
 # 1. Параметри навчального семестру
-st.markdown("### 1. Параметри сітки розкладу")
+st.markdown("### 1. Параметри сітки та комфорту розкладу")
 col_w, col_d, col_s = st.columns(3)
 with col_w:
     max_weeks = st.number_input(
@@ -36,6 +36,20 @@ with col_s:
 ACTIVE_DAYS = DAY_NAMES[:days_count]
 ACTIVE_SLOTS = SLOT_LABELS[:slots_count]
 ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
+
+col_opt1, col_opt2 = st.columns(2)
+with col_opt1:
+    avoid_windows = st.checkbox(
+        "🚫 Заборонити «вікна» у розкладі студентів", 
+        value=False,
+        help="Якщо увімкнено, алгоритм намагатиметься ставити пари підряд."
+    )
+with col_opt2:
+    avoid_single_teacher = st.checkbox(
+        "🚫 Заборонити викладачам мати лише 1 пару на день", 
+        value=False,
+        help="Якщо увімкнено, викладач матиме або 0, або 2+ пари на день."
+    )
 
 # Ініціалізація початкового стану
 if 'schedule_data' not in st.session_state:
@@ -61,12 +75,12 @@ if 'cfg_curriculum' not in st.session_state:
     st.session_state.cfg_curriculum = pd.DataFrame([
         {
             "Групи": ["ПО-11Б"],
-            "Дисципліна": "Педагогіка",
+            "Предмет": "Педагогіка",
             "Викладач": "Усатенко В.М.",
             "Годин на семестр": 30,
             "Формат": "Очно",
-            "Потокова лекція": "Ні",
-            "Аудиторія": "32 авдиторія"
+            "Потокова лекція?": "Ні",
+            "Аудиторія": "15 авдиторія"
         }
     ])
 
@@ -348,7 +362,7 @@ def style_schedule_grid(val):
         return "background-color: #F5F5F5; color: #000000;"
 
 # Генерація розкладу
-def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels, slot_opts, grp_df, grp_w_map, lim_df, plan_df):
+def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels, slot_opts, grp_df, grp_w_map, lim_df, plan_df, no_windows, no_single_teacher):
     if grp_df.empty or plan_df.empty:
         return None, "Будь ласка, заповніть групи та навчальний план."
 
@@ -466,19 +480,20 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     if g_active_lessons:
                         model.Add(sum(x[l["id"], w, d, s] for l in g_active_lessons) <= 1)
 
-    for g in all_registered_groups:
-        g_w = grp_w_map.get(g, max_w)
-        for w in range(g_w):
-            for d in range(d_cnt):
-                g_active_lessons = [l for l in semester_lessons if g in l["groups"] and w < l["eff_weeks"]]
-                if g_active_lessons:
-                    for s1 in range(s_cnt):
-                        for s2 in range(s1 + 1, s_cnt):
-                            for s3 in range(s2 + 1, s_cnt):
-                                y_s1 = sum(x[l["id"], w, d, s1] for l in g_active_lessons)
-                                y_s2 = sum(x[l["id"], w, d, s2] for l in g_active_lessons)
-                                y_s3 = sum(x[l["id"], w, d, s3] for l in g_active_lessons)
-                                model.Add(y_s1 - y_s2 + y_s3 <= 1)
+    if no_windows:
+        for g in all_registered_groups:
+            g_w = grp_w_map.get(g, max_w)
+            for w in range(g_w):
+                for d in range(d_cnt):
+                    g_active_lessons = [l for l in semester_lessons if g in l["groups"] and w < l["eff_weeks"]]
+                    if g_active_lessons:
+                        for s1 in range(s_cnt):
+                            for s2 in range(s1 + 1, s_cnt):
+                                for s3 in range(s2 + 1, s_cnt):
+                                    y_s1 = sum(x[l["id"], w, d, s1] for l in g_active_lessons)
+                                    y_s2 = sum(x[l["id"], w, d, s2] for l in g_active_lessons)
+                                    y_s3 = sum(x[l["id"], w, d, s3] for l in g_active_lessons)
+                                    model.Add(y_s1 - y_s2 + y_s3 <= 1)
 
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
@@ -539,22 +554,36 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     if t_w_lessons:
                         model.Add(sum(x[l["id"], w, d, s] for l in t_w_lessons) <= 1)
 
-    for t in all_teachers:
-        t_lessons = [l for l in semester_lessons if l["teacher"] == t]
-        for w in range(max_w):
-            for d in range(d_cnt):
-                t_w_lessons = [l for l in t_lessons if w < l["eff_weeks"]]
-                if t_w_lessons:
-                    t_day_count = sum(x[l["id"], w, d, s] for l in t_w_lessons for s in range(s_cnt))
-                    model.Add(t_day_count != 1)
+    if no_single_teacher:
+        for t in all_teachers:
+            t_lessons = [l for l in semester_lessons if l["teacher"] == t]
+            for w in range(max_w):
+                for d in range(d_cnt):
+                    t_w_lessons = [l for l in t_lessons if w < l["eff_weeks"]]
+                    if t_w_lessons:
+                        t_day_count = sum(x[l["id"], w, d, s] for l in t_w_lessons for s in range(s_cnt))
+                        model.Add(t_day_count != 1)
 
-    comp_lessons = [l for l in semester_lessons if "Комп" in l["room"] or "спортзал" in l["room"].lower()]
-    for w in range(max_w):
-        for d in range(d_cnt):
-            for s in range(s_cnt):
-                c_w_lessons = [l for l in comp_lessons if w < l["eff_weeks"]]
-                if c_w_lessons:
-                    model.Add(sum(x[l["id"], w, d, s] for l in c_w_lessons) <= 1)
+    # ВИПРАВЛЕНЕ ПРАВИЛО АУДИТОРІЙ: Потоки можуть займати аудиторію разом, але різні заняття не можуть перетинатися в одному кабінеті
+    all_rooms_in_plan = list(set([l["room"] for l in semester_lessons if l["room"]]))
+    for r in all_rooms_in_plan:
+        r_up = r.upper()
+        if r_up != "ОНЛАЙН" and "ПРАКТИКА" not in r_up:
+            r_lessons = [l for l in semester_lessons if l["room"] == r]
+            for w in range(max_w):
+                for d in range(d_cnt):
+                    for s in range(s_cnt):
+                        rw_lessons = [l for l in r_lessons if w < l["eff_weeks"]]
+                        if rw_lessons:
+                            # Групуємо заняття за унікальним специфікатором (однаковий предмет і викладач = спільний потік)
+                            spec_dict = {}
+                            for l in rw_lessons:
+                                spec_dict.setdefault(l["spec_id"], []).append(l)
+                            
+                            # Сума кількості занять для кожного унікального потоку в цю хвилину не може перевищувати 1
+                            # (Тобто в ауд. 32 може одночасно сидіти кілька груп на потоковій лекції одного викладача, 
+                            # але інші викладачі туди вже зайти не зможуть)
+                            model.Add(sum(x[l["id"], w, d, s] for l_list in spec_dict.values() for l in l_list[:1]) <= 1)
 
     penalties = []
     slot_penalties = {0: 10, 1: 0, 2: 0, 3: 0, 4: 100}
@@ -575,7 +604,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
     status = solver.Solve(model)
 
     if status not in [OPTIMAL, FEASIBLE]:
-        return None, "Не вдалося розставити розклад. Перевірте обмеження або збільшіть вільні слоти."
+        return None, "Не вдалося розставити розклад. Перевірте зайнятість кабінетів або кількість годин."
 
     schedule_records = []
     for l in semester_lessons:
@@ -603,7 +632,8 @@ if st.button("Згенерувати розклад", type="primary"):
         res_records, err = generate_full_semester_schedule(
             max_weeks, days_count, slots_count, 
             ACTIVE_DAYS, ACTIVE_SLOTS, ACTIVE_SLOT_OPTIONS,
-            groups_df, group_weeks_map, limits_df, curriculum_df
+            groups_df, group_weeks_map, limits_df, curriculum_df,
+            avoid_windows, avoid_single_teacher
         )
     
     if err:
