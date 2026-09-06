@@ -20,11 +20,27 @@ SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
+# Синхронізація зміни кількості тижнів з таблицею
+def on_max_weeks_change():
+    new_max = st.session_state.get("max_weeks_input", 15)
+    if 'cfg_groups' in st.session_state and isinstance(st.session_state.cfg_groups, pd.DataFrame):
+        if "Кількість тижнів" in st.session_state.cfg_groups.columns:
+            st.session_state.cfg_groups["Кількість тижнів"] = st.session_state.cfg_groups["Кількість тижнів"].apply(
+                lambda x: min(int(x), new_max) if pd.notnull(x) else new_max
+            )
+    if "groups_editor" in st.session_state:
+        del st.session_state["groups_editor"]
+
 # 1. Параметри навчального семестру
 st.markdown("### 1. Параметри сітки розкладу")
 col_w, col_d, col_s = st.columns(3)
 with col_w:
-    max_weeks = st.number_input("Максимальна кількість тижнів у семестрі", min_value=1, max_value=25, value=15)
+    max_weeks = st.number_input(
+        "Максимальна кількість тижнів у семестрі", 
+        min_value=1, max_value=25, value=15, 
+        key="max_weeks_input",
+        on_change=on_max_weeks_change
+    )
 with col_d:
     days_count = st.number_input("Навчальних днів на тиждень", min_value=1, max_value=6, value=5)
 with col_s:
@@ -58,16 +74,16 @@ if 'cfg_curriculum' not in st.session_state:
     st.session_state.cfg_curriculum = pd.DataFrame([
         {
             "Групи": ["ПО-11Б"],
-            "Предмет": "Педагогіка",
+            "Дисципліна": "Педагогіка",
             "Викладач": "Усатенко В.М.",
             "Годин на семестр": 30,
             "Формат": "Очно",
-            "Потокова лекція?": "Ні",
+            "Потокова лекція": "Ні",
             "Аудиторія": "32"
         }
     ])
 
-# --- ФУНКЦІЯ-КОЛБЕК ДЛЯ НАДІЙНОГО ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ JSON ---
+# --- ФУНКЦІЯ-КОЛБЕК ДЛЯ ВІДНОВЛЕННЯ JSON ---
 def handle_json_upload():
     uploaded_file = st.session_state.get("config_file_uploader")
     if uploaded_file is not None:
@@ -83,7 +99,7 @@ def handle_json_upload():
                     if g_name:
                         w_val = g_item.get("Кількість тижнів")
                         try:
-                            w_num = int(w_val) if pd.notnull(w_val) else max_weeks
+                            w_num = min(int(w_val), max_weeks) if pd.notnull(w_val) else max_weeks
                         except (ValueError, TypeError):
                             w_num = max_weeks
                         prac_val = str(g_item.get("День практики") or "Немає").strip()
@@ -100,14 +116,13 @@ def handle_json_upload():
             raw_r = config.get("rooms", "")
             rooms_str = "\n".join(raw_r) if isinstance(raw_r, list) else str(raw_r)
 
-            # 3. Універсальний парсинг навчального плану дисциплін
+            # 3. Парсинг навчального плану
             raw_curriculum = config.get("curriculum", [])
             adapted_curriculum = []
             for c_item in raw_curriculum:
                 if not isinstance(c_item, dict):
                     continue
                 
-                # Групи
                 groups_val = c_item.get("Групи") or c_item.get("Група") or c_item.get("groups") or []
                 if isinstance(groups_val, str):
                     parsed_groups = [g.strip() for g in groups_val.split(",") if g.strip()]
@@ -116,27 +131,18 @@ def handle_json_upload():
                 else:
                     parsed_groups = []
 
-                # Предмет
                 subj_val = c_item.get("Предмет") or c_item.get("Дисципліна") or c_item.get("Назва предмета") or "Математика"
-                
-                # Викладач
                 teach_val = c_item.get("Викладач") or c_item.get("ПІБ викладача") or "Черненко В.П."
                 
-                # Годин
                 hours_val = c_item.get("Годин на семестр") or c_item.get("Години") or 30
                 try:
                     hours_num = int(hours_val)
                 except (ValueError, TypeError):
                     hours_num = 30
 
-                # Формат
                 fmt_val = c_item.get("Формат") or "Очно"
-
-                # Потокова лекція
                 stream_raw = c_item.get("Потокова лекція?") or c_item.get("Потокова лекція") or "Ні"
                 stream_val = "Так" if str(stream_raw).strip() in ["Так", "True", "true", "1"] else "Ні"
-
-                # Аудиторія
                 room_val = c_item.get("Аудиторія") or c_item.get("Аудиторія / Формат") or "1"
 
                 adapted_curriculum.append({
@@ -165,7 +171,6 @@ def handle_json_upload():
                         "Недоступні пари": unavail
                     })
 
-            # Збереження в сесію
             if adapted_groups:
                 st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
             st.session_state.cfg_teachers = teachers_str
@@ -175,7 +180,6 @@ def handle_json_upload():
             if adapted_curriculum:
                 st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
 
-            # Очищення віджетів для оновлення таблиць
             for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -236,17 +240,14 @@ with col_r:
         height=140
     )
 
-# Парсинг довідників
 active_groups_df = groups_df.dropna(subset=["Група"]).copy()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()]
 
 active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
 active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 
-# Гарантія синхронізації: додаємо всі елементи з навчального плану до випадаючих списків
 if not st.session_state.cfg_curriculum.empty:
     for _, c_row in st.session_state.cfg_curriculum.iterrows():
-        # Перевірка груп
         c_g_list = c_row.get("Групи", [])
         if isinstance(c_g_list, list):
             for cg in c_g_list:
@@ -259,12 +260,10 @@ if not st.session_state.cfg_curriculum.empty:
                 if cg_s and cg_s not in active_groups:
                     active_groups.append(cg_s)
 
-        # Перевірка викладача
         c_t = str(c_row.get("Викладач", "")).strip()
         if c_t and c_t not in active_teachers and c_t != "None":
             active_teachers.append(c_t)
 
-        # Перевірка аудиторії
         c_r = str(c_row.get("Аудиторія", "")).strip()
         if c_r and c_r not in active_rooms and c_r != "None":
             active_rooms.append(c_r)
@@ -314,7 +313,6 @@ curriculum_df = st.data_editor(
     key="curriculum_editor_grid"
 )
 
-# Експорт даних
 config_export_data = {
     "groups": groups_df.to_dict(orient="records"),
     "teachers": teachers_text,
@@ -334,7 +332,6 @@ with col_exp:
         use_container_width=True
     )
 
-# Стилізація осередків
 def style_schedule_grid(val):
     if not isinstance(val, str) or val == "-" or not val:
         return ""
@@ -350,7 +347,6 @@ def style_schedule_grid(val):
     else:
         return "background-color: #F5F5F5; color: #000000;"
 
-# Генерація
 def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels, slot_opts, grp_df, grp_w_map, lim_df, plan_df):
     if grp_df.empty or plan_df.empty:
         return None, "Будь ласка, заповніть групи та навчальний план."
@@ -601,7 +597,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
 
     return schedule_records, None
 
-# Кнопка запуску
 if st.button("Згенерувати розклад", type="primary"):
     with st.spinner("Обчислення оптимального розкладу на весь семестр..."):
         res_records, err = generate_full_semester_schedule(
@@ -624,7 +619,6 @@ if st.button("Згенерувати розклад", type="primary"):
             "groups_df": groups_df
         }
 
-# Перегляд та відображення
 if st.session_state.schedule_data is not None:
     st.markdown("---")
     st.markdown("### 📊 Перегляд та експорт розкладу")
@@ -710,7 +704,6 @@ if st.session_state.schedule_data is not None:
         styled_t = df_teacher_view.style.map(style_schedule_grid)
         st.dataframe(styled_t, use_container_width=True, height=600)
 
-    # Експорт в Excel
     st.markdown("#### 📥 Завантаження розкладу в Excel")
     
     buffer_all = io.BytesIO()
