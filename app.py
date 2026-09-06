@@ -38,19 +38,16 @@ ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
 if 'schedule_data' not in st.session_state:
     st.session_state.schedule_data = None
 
-if 'last_processed_file' not in st.session_state:
-    st.session_state.last_processed_file = None
-
 if 'cfg_groups' not in st.session_state:
     st.session_state.cfg_groups = pd.DataFrame([
         {"Група": "ПО-11Б", "Кількість тижнів": max_weeks, "День практики": "Немає"}
     ])
 
 if 'cfg_teachers' not in st.session_state:
-    st.session_state.cfg_teachers = "Усатенко В.М.\nЧерненко В.П."
+    st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1\n15\n27-А аудиторія\n32\n27-А Комп'ютерний клас\nОНЛАЙН"
+    st.session_state.cfg_rooms = "1\n15\n32\n27-А Комп'ютерний клас\nОНЛАЙН"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
@@ -70,100 +67,140 @@ if 'cfg_curriculum' not in st.session_state:
         }
     ])
 
-# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХЗ ПОВНОЮ СУМІСНІСТЮ ---
+# --- ФУНКЦІЯ-КОЛБЕК ДЛЯ НАДІЙНОГО ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ JSON ---
+def handle_json_upload():
+    uploaded_file = st.session_state.get("config_file_uploader")
+    if uploaded_file is not None:
+        try:
+            config = json.load(uploaded_file)
+            
+            # 1. Парсинг груп
+            raw_groups = config.get("groups", [])
+            adapted_groups = []
+            for g_item in raw_groups:
+                if isinstance(g_item, dict):
+                    g_name = str(g_item.get("Група") or g_item.get("group") or "").strip()
+                    if g_name:
+                        w_val = g_item.get("Кількість тижнів")
+                        try:
+                            w_num = int(w_val) if pd.notnull(w_val) else max_weeks
+                        except (ValueError, TypeError):
+                            w_num = max_weeks
+                        prac_val = str(g_item.get("День практики") or "Немає").strip()
+                        adapted_groups.append({
+                            "Група": g_name,
+                            "Кількість тижнів": w_num,
+                            "День практики": prac_val if prac_val in ACTIVE_DAYS else "Немає"
+                        })
+
+            # 2. Парсинг викладачів та аудиторій
+            raw_t = config.get("teachers", "")
+            teachers_str = "\n".join(raw_t) if isinstance(raw_t, list) else str(raw_t)
+            
+            raw_r = config.get("rooms", "")
+            rooms_str = "\n".join(raw_r) if isinstance(raw_r, list) else str(raw_r)
+
+            # 3. Універсальний парсинг навчального плану дисциплін
+            raw_curriculum = config.get("curriculum", [])
+            adapted_curriculum = []
+            for c_item in raw_curriculum:
+                if not isinstance(c_item, dict):
+                    continue
+                
+                # Групи
+                groups_val = c_item.get("Групи") or c_item.get("Група") or c_item.get("groups") or []
+                if isinstance(groups_val, str):
+                    parsed_groups = [g.strip() for g in groups_val.split(",") if g.strip()]
+                elif isinstance(groups_val, list):
+                    parsed_groups = [str(g).strip() for g in groups_val if str(g).strip()]
+                else:
+                    parsed_groups = []
+
+                # Предмет
+                subj_val = c_item.get("Предмет") or c_item.get("Дисципліна") or c_item.get("Назва предмета") or "Математика"
+                
+                # Викладач
+                teach_val = c_item.get("Викладач") or c_item.get("ПІБ викладача") or "Черненко В.П."
+                
+                # Годин
+                hours_val = c_item.get("Годин на семестр") or c_item.get("Години") or 30
+                try:
+                    hours_num = int(hours_val)
+                except (ValueError, TypeError):
+                    hours_num = 30
+
+                # Формат
+                fmt_val = c_item.get("Формат") or "Очно"
+
+                # Потокова лекція
+                stream_raw = c_item.get("Потокова лекція?") or c_item.get("Потокова лекція") or "Ні"
+                stream_val = "Так" if str(stream_raw).strip() in ["Так", "True", "true", "1"] else "Ні"
+
+                # Аудиторія
+                room_val = c_item.get("Аудиторія") or c_item.get("Аудиторія / Формат") or "1"
+
+                adapted_curriculum.append({
+                    "Групи": parsed_groups,
+                    "Предмет": str(subj_val).strip(),
+                    "Викладач": str(teach_val).strip(),
+                    "Годин на семестр": hours_num,
+                    "Формат": str(fmt_val).strip(),
+                    "Потокова лекція?": stream_val,
+                    "Аудиторія": str(room_val).strip()
+                })
+
+            # 4. Парсинг обмежень
+            raw_limits = config.get("limits", [])
+            adapted_limits = []
+            for l_item in raw_limits:
+                if isinstance(l_item, dict):
+                    t_name = str(l_item.get("Викладач") or "").strip()
+                    d_name = str(l_item.get("День тижня") or "Всі дні").strip()
+                    unavail = l_item.get("Недоступні пари") or ["Всі пари"]
+                    if isinstance(unavail, str):
+                        unavail = [s.strip() for s in unavail.split(",") if s.strip()]
+                    adapted_limits.append({
+                        "Викладач": t_name,
+                        "День тижня": d_name,
+                        "Недоступні пари": unavail
+                    })
+
+            # Збереження в сесію
+            if adapted_groups:
+                st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
+            st.session_state.cfg_teachers = teachers_str
+            st.session_state.cfg_rooms = rooms_str
+            if adapted_limits:
+                st.session_state.cfg_limits = pd.DataFrame(adapted_limits)
+            if adapted_curriculum:
+                st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
+
+            # Очищення віджетів для оновлення таблиць
+            for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+
+            st.session_state.upload_success = True
+        except Exception as e:
+            st.session_state.upload_error = str(e)
+
+# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ ---
 st.markdown("### 💾 Збереження та відновлення налаштувань")
 col_imp, col_exp = st.columns(2)
 
 with col_imp:
-    uploaded_file = st.file_uploader("📂 Відновити збережені дані (файл .json)", type=["json"])
-    if uploaded_file is not None:
-        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-        
-        if st.session_state.last_processed_file != file_id:
-            try:
-                config = json.load(uploaded_file)
-                
-                # 1. Адаптація груп
-                raw_groups = config.get("groups", [])
-                adapted_groups = []
-                for g_item in raw_groups:
-                    g_dict = dict(g_item)
-                    if "Формат за замовчуванням" in g_dict: del g_dict["Формат за замовчуванням"]
-                    if "Формат" in g_dict: del g_dict["Формат"]
-                    if "Кількість тижнів" not in g_dict or pd.isnull(g_dict["Кількість тижнів"]):
-                        g_dict["Кількість тижнів"] = max_weeks
-                    if "День практики" not in g_dict:
-                        g_dict["День практики"] = "Немає"
-                    adapted_groups.append(g_dict)
-
-                # 2. Адаптація викладачів та аудиторій
-                raw_t = config.get("teachers", "")
-                teachers_str = "\n".join(raw_t) if isinstance(raw_t, list) else str(raw_t)
-                
-                raw_r = config.get("rooms", "")
-                rooms_str = "\n".join(raw_r) if isinstance(raw_r, list) else str(raw_r)
-
-                # 3. Адаптація навчального плану (Група -> Групи, Дисципліна -> Предмет, Потокова лекція -> Потокова лекція?)
-                raw_curriculum = config.get("curriculum", [])
-                adapted_curriculum = []
-                for c_item in raw_curriculum:
-                    c_dict = dict(c_item)
-                    
-                    # Групи
-                    g_val = c_dict.pop("Група", None)
-                    if "Групи" not in c_dict or not c_dict["Групи"]:
-                        if isinstance(g_val, str):
-                            c_dict["Групи"] = [g.strip() for g in g_val.split(",") if g.strip()]
-                        elif isinstance(g_val, list):
-                            c_dict["Групи"] = g_val
-                        else:
-                            c_dict["Групи"] = []
-                    elif isinstance(c_dict["Групи"], str):
-                        c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
-
-                    # Назва предмета
-                    for subj_k in ["Дисципліна", "Назва предмета"]:
-                        if subj_k in c_dict:
-                            if "Предмет" not in c_dict or not c_dict["Предмет"]:
-                                c_dict["Предмет"] = c_dict.pop(subj_k)
-
-                    # Аудиторія
-                    if "Аудиторія / Формат" in c_dict:
-                        old_room = c_dict.pop("Аудиторія / Формат")
-                        if "Аудиторія" not in c_dict or not c_dict["Аудиторія"]:
-                            c_dict["Аудиторія"] = str(old_room).strip() if pd.notnull(old_room) else "1"
-
-                    # Потокова лекція
-                    if "Потокова лекція" in c_dict:
-                        old_stream = c_dict.pop("Потокова лекція")
-                        if "Потокова лекція?" not in c_dict:
-                            c_dict["Потокова лекція?"] = old_stream
-
-                    # Значення за замовчуванням
-                    if "Формат" not in c_dict: c_dict["Формат"] = "Очно"
-                    if "Потокова лекція?" not in c_dict: c_dict["Потокова лекція?"] = "Ні"
-                    if "Предмет" not in c_dict or not c_dict["Предмет"]: c_dict["Предмет"] = "Математика"
-                    if "Викладач" not in c_dict or not c_dict["Викладач"]: c_dict["Викладач"] = "Черненко В.П."
-                    if "Годин на семестр" not in c_dict or pd.isnull(c_dict["Годин на семестр"]): c_dict["Годин на семестр"] = 30
-
-                    adapted_curriculum.append(c_dict)
-
-                st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
-                st.session_state.cfg_teachers = teachers_str
-                st.session_state.cfg_rooms = rooms_str
-                st.session_state.cfg_limits = pd.DataFrame(config.get("limits", []))
-                st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
-                st.session_state.last_processed_file = file_id
-                
-                # Очищення віджетів
-                for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-                st.success("Дані успішно відновлено!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Помилка зчитування файлу: {e}")
+    st.file_uploader(
+        "📂 Відновити збережені дані (файл .json)", 
+        type=["json"], 
+        key="config_file_uploader",
+        on_change=handle_json_upload
+    )
+    if st.session_state.get("upload_success"):
+        st.success("Всі дані успішно завантажено та відновлено!")
+        st.session_state.upload_success = False
+    if st.session_state.get("upload_error"):
+        st.error(f"Помилка зчитування файлу: {st.session_state.upload_error}")
+        st.session_state.upload_error = None
 
 # 2. Довідники закладу
 st.markdown("### 2. Довідники закладу")
@@ -206,19 +243,21 @@ active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist()
 active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
 active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 
-# Синхронізація списків: гарантуємо, що абсолютно всі елементи з планів є у випадаючих списках
+# Гарантія синхронізації: додаємо всі елементи з навчального плану до випадаючих списків
 if not st.session_state.cfg_curriculum.empty:
     for _, c_row in st.session_state.cfg_curriculum.iterrows():
         # Перевірка груп
         c_g_list = c_row.get("Групи", [])
         if isinstance(c_g_list, list):
             for cg in c_g_list:
-                if cg and str(cg).strip() not in active_groups:
-                    active_groups.append(str(cg).strip())
+                cg_s = str(cg).strip()
+                if cg_s and cg_s not in active_groups:
+                    active_groups.append(cg_s)
         elif isinstance(c_g_list, str):
             for cg in c_g_list.split(","):
-                if cg and str(cg).strip() not in active_groups:
-                    active_groups.append(str(cg).strip())
+                cg_s = str(cg).strip()
+                if cg_s and cg_s not in active_groups:
+                    active_groups.append(cg_s)
 
         # Перевірка викладача
         c_t = str(c_row.get("Викладач", "")).strip()
@@ -232,7 +271,7 @@ if not st.session_state.cfg_curriculum.empty:
 
 if not active_groups: active_groups = ["ПО-11Б"]
 if not active_teachers: active_teachers = ["Черненко В.П."]
-if not active_rooms: active_rooms = ["1 аудиторія"]
+if not active_rooms: active_rooms = ["1"]
 
 group_weeks_map = {}
 for _, g_row in active_groups_df.iterrows():
@@ -295,7 +334,7 @@ with col_exp:
         use_container_width=True
     )
 
-# Стилізація
+# Стилізація осередків
 def style_schedule_grid(val):
     if not isinstance(val, str) or val == "-" or not val:
         return ""
@@ -562,7 +601,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
 
     return schedule_records, None
 
-# Запуск
+# Кнопка запуску
 if st.button("Згенерувати розклад", type="primary"):
     with st.spinner("Обчислення оптимального розкладу на весь семестр..."):
         res_records, err = generate_full_semester_schedule(
@@ -585,7 +624,7 @@ if st.button("Згенерувати розклад", type="primary"):
             "groups_df": groups_df
         }
 
-# Результати
+# Перегляд та відображення
 if st.session_state.schedule_data is not None:
     st.markdown("---")
     st.markdown("### 📊 Перегляд та експорт розкладу")
