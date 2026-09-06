@@ -36,7 +36,7 @@ ACTIVE_DAYS = DAY_NAMES[:days_count]
 ACTIVE_SLOTS = SLOT_LABELS[:slots_count]
 ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
 
-st.info("ℹ️ Кольори: Блакитний — ОНЛАЙН, Світло-зелений — ПОТІК (Лекція). Пріоритет: пари та лекції спочатку.")
+st.info("ℹ️ Кольори: блакитний — ОНЛАЙН, світло-зелений — ПОТІК")
 
 # Ініціалізація станів
 if 'schedule_data' not in st.session_state: st.session_state.schedule_data = None
@@ -173,7 +173,7 @@ def generate_fast_schedule():
                             for s3 in range(s2 + 1, slots_count):
                                 model.Add(g_vars[s1] + g_vars[s3] <= 1 + g_vars[s2])
 
-    # Обмеження вчителів
+    # Обмеження вчителів (Тут виправлено помилку)
     for _, lim in limits_df.iterrows():
         t_n, d_n, u_s = lim.get("Викладач"), lim.get("День тижня"), lim.get("Недоступні пари", [])
         if not t_n: continue
@@ -183,9 +183,10 @@ def generate_fast_schedule():
                 if "Всі пари" in u_s or any(f"{sli} пара" in str(item) for item in u_s):
                     for s in specs:
                         if s["teacher"] == t_n:
-                            for p_ parity in [0, 1]: model.Add(x[s["id"], p_parity, di, sli] == 0)
+                            for p_parity in [0, 1]: 
+                                model.Add(x[s["id"], p_parity, di, sli] == 0)
 
-    # ОПТИМІЗАЦІЯ (ШТРАФИ ТА БОНУСИ)
+    # ОПТИМІЗАЦІЯ
     penalties = []
     # 1. Бонус за подвійні пари
     for s in specs:
@@ -194,7 +195,7 @@ def generate_fast_schedule():
                 for sl in range(slots_count - 1):
                     is_double = model.NewBoolVar(f'dbl_{s["id"]}_{p}_{d}_{sl}')
                     model.Add(x[s["id"],p,d,sl] + x[s["id"],p,d,sl+1] == 2).OnlyEnforceIf(is_double)
-                    penalties.append(is_double * -60)
+                    penalties.append(is_double * -70)
 
     # 2. Пріоритет лекцій перед практиками
     subj_teach_map = defaultdict(list)
@@ -212,23 +213,23 @@ def generate_fast_schedule():
                                     if (d1 * slots_count + sl1) > (d2 * slots_count + sl2):
                                         bad_order = model.NewBoolVar('')
                                         model.Add(x[lecture["id"], p, d1, sl1] + x[prac["id"], p, d2, sl2] == 2).OnlyEnforceIf(bad_order)
-                                        penalties.append(bad_order * 150)
+                                        penalties.append(bad_order * 200)
 
-    # 3. Штраф за одиноку пару
+    # 3. Штраф за одиноку пару у викладача
     for t in base_teachers:
         for p in [0, 1]:
             for d in range(days_count):
                 tc = sum(x[s["id"], p, d, sl] for s in specs if s["teacher"] == t for sl in range(slots_count))
                 single = model.NewBoolVar('')
                 model.Add(tc == 1).OnlyEnforceIf(single)
-                penalties.append(single * 120)
+                penalties.append(single * 150)
 
     model.Minimize(sum(penalties))
     solver = CpSolver()
     solver.parameters.max_time_in_seconds = 30.0
     status = solver.Solve(model)
     
-    if status not in [OPTIMAL, FEASIBLE]: return None, "Неможливо знайти рішення. Зменште обмеження."
+    if status not in [OPTIMAL, FEASIBLE]: return None, "Рішення не знайдено. Перевірте обмеження."
 
     # РОЗГОРТАННЯ
     res = []
@@ -240,7 +241,6 @@ def generate_fast_schedule():
             for d in range(days_count):
                 for sl in range(slots_count):
                     if solver.Value(x[s["id"], p, d, sl]) == 1: tmpl.append((p, d, sl))
-        
         if not tmpl: continue
         for idx, w in enumerate(target_weeks):
             p_t, d_t, sl_t = tmpl[idx % len(tmpl)]
@@ -250,17 +250,13 @@ def generate_fast_schedule():
                 for ri, rname in enumerate(auto_rooms):
                     if (s["id"], p_t, d_t, sl_t, ri) in room_vars and solver.Value(room_vars[s["id"], p_t, d_t, sl_t, ri]) == 1:
                         rm = rname; break
-            res.append({
-                "week": w, "day": ACTIVE_DAYS[d_t], "slot_idx": sl_t, "slot_label": ACTIVE_SLOTS[sl_t],
-                "groups": s["groups"], "subject": s["subject"], "teacher": s["teacher"], 
-                "room": rm, "fmt": s["fmt"], "is_stream": s["is_stream"]
-            })
+            res.append({"week": w, "day": ACTIVE_DAYS[d_t], "slot_idx": sl_t, "slot_label": ACTIVE_SLOTS[sl_t], "groups": s["groups"], "subject": s["subject"], "teacher": s["teacher"], "room": rm, "fmt": s["fmt"], "is_stream": s["is_stream"]})
     return res, None
 
 # --- ВІЗУАЛІЗАЦІЯ ---
 st.markdown("---")
 if st.button("🚀 Згенерувати розклад", type="primary", use_container_width=True):
-    with st.spinner("Алгоритм оптимізує потоки та пари..."):
+    with st.spinner("Групування лекцій та дуплетів..."):
         records, err = generate_fast_schedule()
         if err: st.error(err)
         else:
@@ -277,10 +273,10 @@ if st.session_state.schedule_data:
         if "(ПОТІК)" in v_up: return "background-color: #D5E8D4; white-space: pre-wrap;"
         return "background-color: #f5f5f5; white-space: pre-wrap;"
 
-    view = st.radio("Режим перегляду:", ["📅 По тижнях (Групи)", "👨‍🏫 Розклад викладача"], horizontal=True)
+    view = st.radio("Перегляд:", ["📅 По тижнях (Групи)", "👨‍🏫 Розклад викладача"], horizontal=True)
 
     if view == "📅 По тижнях (Групи)":
-        w_sel = st.selectbox("Оберіть тиждень:", range(1, data["max_weeks"]+1))
+        w_sel = st.selectbox("Тиждень:", range(1, data["max_weeks"]+1))
         grid = []
         for d in ACTIVE_DAYS:
             for sl in range(slots_count):
@@ -349,4 +345,4 @@ if st.session_state.schedule_data:
                     ws.write(r_idx + 1, c_idx, v, f)
             for c_idx in range(len(df_w.columns)): ws.write(0, c_idx, df_w.columns[c_idx], head_f); ws.set_column(c_idx, c_idx, 22)
 
-    st.download_button(label="📥 Завантажити повний розклад Excel", data=output.getvalue(), file_name="Academy_Schedule_Colored.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    st.download_button(label="📥 Завантажити повний розклад Excel", data=output.getvalue(), file_name="Academy_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
