@@ -66,7 +66,7 @@ if 'cfg_curriculum' not in st.session_state:
             "Годин на семестр": 30,
             "Формат": "Очно",
             "Потокова лекція": "Ні",
-            "Авдиторія": "32 авдиторія"
+            "Аудиторія": "32 авдиторія"
         }
     ])
 
@@ -77,7 +77,6 @@ def handle_json_upload():
         try:
             config = json.load(uploaded_file)
             
-            # 1. Парсинг груп
             raw_groups = config.get("groups", [])
             adapted_groups = []
             for g_item in raw_groups:
@@ -96,7 +95,6 @@ def handle_json_upload():
                             "День практики": prac_val if prac_val in DAY_NAMES else "Немає"
                         })
 
-            # 2. Парсинг викладачів та аудиторій
             raw_t = config.get("teachers", "")
             if isinstance(raw_t, list):
                 teachers_str = "\n".join([str(t).strip() for t in raw_t if str(t).strip()])
@@ -109,7 +107,6 @@ def handle_json_upload():
             else:
                 rooms_str = str(raw_r)
 
-            # 3. Парсинг навчального плану
             raw_curriculum = config.get("curriculum", [])
             adapted_curriculum = []
             for c_item in raw_curriculum:
@@ -148,7 +145,6 @@ def handle_json_upload():
                     "Аудиторія": str(room_val).strip()
                 })
 
-            # 4. Парсинг обмежень
             raw_limits = config.get("limits", [])
             adapted_limits = []
             for l_item in raw_limits:
@@ -235,7 +231,7 @@ with col_r:
         key="cfg_rooms"
     )
 
-# Автоматичне об'єднання списків з текстових полів та таблиць (щоб усе було у випадаючих списках)
+# Автоматичне об'єднання списків
 base_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
 active_teachers = list(base_teachers)
 for df_src in [st.session_state.cfg_limits, st.session_state.cfg_curriculum]:
@@ -285,7 +281,6 @@ if not active_groups_df.empty:
 
 # 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
-
 limits_df = st.data_editor(
     st.session_state.cfg_limits,
     num_rows="dynamic",
@@ -297,11 +292,9 @@ limits_df = st.data_editor(
     use_container_width=True,
     key="limits_editor_grid"
 )
-st.session_state.cfg_limits = limits_df
 
 # 4. Навчальний план дисциплін
 st.markdown("### 4. Навчальний план дисциплін")
-
 curriculum_df = st.data_editor(
     st.session_state.cfg_curriculum,
     num_rows="dynamic",
@@ -317,7 +310,6 @@ curriculum_df = st.data_editor(
     use_container_width=True,
     key="curriculum_editor_grid"
 )
-st.session_state.cfg_curriculum = curriculum_df
 
 # Експорт актуального стану
 config_export_data = {
