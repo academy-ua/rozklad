@@ -46,12 +46,11 @@ if 'cfg_groups' not in st.session_state:
         {"Група": "ПО-11Б", "Кількість тижнів": 15, "День практики": "Немає"}
     ])
 
-# Змінні збережені через key автоматично зв'язуються з віджетами
 if 'cfg_teachers' not in st.session_state:
     st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1 авдиторія\n15 авдиторія\n32 авдиторія\n27-А Комп'ютерний клас\nОНЛАЙН"
+    st.session_state.cfg_rooms = "1 авдиторія\n32 авдиторія\n27-А Комп'ютерний клас\nОНЛАЙН\nСпортзал"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
@@ -67,7 +66,7 @@ if 'cfg_curriculum' not in st.session_state:
             "Годин на семестр": 30,
             "Формат": "Очно",
             "Потокова лекція": "Ні",
-            "Аудиторія": "32"
+            "Аудиторія": "32 авдиторія"
         }
     ])
 
@@ -168,7 +167,6 @@ def handle_json_upload():
             if adapted_curriculum:
                 st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
 
-            # Скидання ключів віджетів редакторів для оновлення даних
             for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -229,40 +227,11 @@ with col_r:
         key="cfg_rooms"
     )
 
-# Зчитування активних груп з поточного стану віджета
+# Отримання списків для валідації та генерації
 active_groups_df = groups_df.dropna(subset=["Група"]).copy() if not groups_df.empty else pd.DataFrame()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()] if not active_groups_df.empty else []
 
-active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
-active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
-
-# Синхронізація елементів із навчального плану
-curr_df_source = st.session_state.cfg_curriculum
-if not curr_df_source.empty:
-    for _, c_row in curr_df_source.iterrows():
-        c_g_list = c_row.get("Групи", [])
-        if isinstance(c_g_list, list):
-            for cg in c_g_list:
-                cg_s = str(cg).strip()
-                if cg_s and cg_s not in active_groups:
-                    active_groups.append(cg_s)
-        elif isinstance(c_g_list, str):
-            for cg in c_g_list.split(","):
-                cg_s = str(cg).strip()
-                if cg_s and cg_s not in active_groups:
-                    active_groups.append(cg_s)
-
-        c_t = str(c_row.get("Викладач", "")).strip()
-        if c_t and c_t not in active_teachers and c_t != "None":
-            active_teachers.append(c_t)
-
-        c_r = str(c_row.get("Аудиторія", "")).strip()
-        if c_r and c_r not in active_rooms and c_r != "None":
-            active_rooms.append(c_r)
-
 if not active_groups: active_groups = ["ПО-11Б"]
-if not active_teachers: active_teachers = ["Черненко В.П."]
-if not active_rooms: active_rooms = ["1"]
 
 group_weeks_map = {}
 if not active_groups_df.empty:
@@ -272,22 +241,23 @@ if not active_groups_df.empty:
         if g_n:
             group_weeks_map[g_n] = g_w
 
-# 3. Обмеження викладачів
+# 3. Обмеження викладачів (Викладач тепер текстове поле -> не може спричинити зникнення даних)
 st.markdown("### 3. Обмеження та недоступність викладачів")
 
 limits_df = st.data_editor(
     st.session_state.cfg_limits,
     num_rows="dynamic",
     column_config={
-        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
+        "Викладач": st.column_config.TextColumn(required=True, help="ПІБ викладача"),
         "День тижня": st.column_config.SelectboxColumn(options=["Всі дні"] + ACTIVE_DAYS, required=True),
         "Недоступні пари": st.column_config.MultiselectColumn(options=["Всі пари"] + ACTIVE_SLOT_OPTIONS, required=True)
     },
     use_container_width=True,
     key="limits_editor_grid"
 )
+st.session_state.cfg_limits = limits_df
 
-# 4. Навчальний план дисциплін
+# 4. Навчальний план дисциплін (Викладач та Аудиторія тепер текстові поля -> повна стабільність)
 st.markdown("### 4. Навчальний план дисциплін")
 
 curriculum_df = st.data_editor(
@@ -296,15 +266,16 @@ curriculum_df = st.data_editor(
     column_config={
         "Групи": st.column_config.MultiselectColumn(options=active_groups, required=True, help="Оберіть 1 або кілька груп"),
         "Предмет": st.column_config.TextColumn(required=True),
-        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
+        "Викладач": st.column_config.TextColumn(required=True, help="ПІБ викладача"),
         "Годин на семестр": st.column_config.NumberColumn(min_value=10, max_value=300, step=10, default=30, required=True),
         "Формат": st.column_config.SelectboxColumn(options=["Очно", "Онлайн"], required=True, default="Очно"),
         "Потокова лекція?": st.column_config.SelectboxColumn(options=["Ні", "Так"], required=True, default="Ні"),
-        "Аудиторія": st.column_config.SelectboxColumn(options=active_rooms, required=True)
+        "Аудиторія": st.column_config.TextColumn(required=True, help="Номер аудиторії або 'спортзал'")
     },
     use_container_width=True,
     key="curriculum_editor_grid"
 )
+st.session_state.cfg_curriculum = curriculum_df
 
 # Експорт актуального стану
 config_export_data = {
@@ -342,7 +313,7 @@ def style_schedule_grid(val):
     else:
         return "background-color: #F5F5F5; color: #000000;"
 
-# Генерація
+# Генерація розкладу
 def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels, slot_opts, grp_df, grp_w_map, lim_df, plan_df):
     if grp_df.empty or plan_df.empty:
         return None, "Будь ласка, заповніть групи та навчальний план."
@@ -543,7 +514,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     t_day_count = sum(x[l["id"], w, d, s] for l in t_w_lessons for s in range(s_cnt))
                     model.Add(t_day_count != 1)
 
-    comp_lessons = [l for l in semester_lessons if "Комп" in l["room"]]
+    comp_lessons = [l for l in semester_lessons if "Комп" in l["room"] or "спортзал" in l["room"].lower()]
     for w in range(max_w):
         for d in range(d_cnt):
             for s in range(s_cnt):
@@ -605,13 +576,14 @@ if st.button("Згенерувати розклад", type="primary"):
         st.error(err)
     else:
         st.success("Розклад успішно згенеровано!")
+        active_teachers_list = list(set(curriculum_df["Викладач"].dropna().tolist() + limits_df["Викладач"].dropna().tolist()))
         st.session_state.schedule_data = {
             "records": res_records,
             "max_weeks": max_weeks,
             "days_count": days_count,
             "slots_count": slots_count,
             "active_groups": active_groups,
-            "active_teachers": active_teachers,
+            "active_teachers": active_teachers_list,
             "groups_df": groups_df
         }
 
