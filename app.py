@@ -20,16 +20,66 @@ SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
-# Синхронізація зміни кількості тижнів з таблицею
+# Допоміжна функція збереження непостійних змін з віджету редактора
+def apply_editor_changes(df, editor_key):
+    if editor_key not in st.session_state or df is None:
+        return df
+    
+    edits = st.session_state[editor_key]
+    if not isinstance(edits, dict):
+        return df
+
+    res_df = df.copy()
+
+    # 1. Збереження відредагованих комірок
+    edited_rows = edits.get("edited_rows", {})
+    for row_idx, row_changes in edited_rows.items():
+        try:
+            r_i = int(row_idx)
+            if r_i < len(res_df):
+                for col_name, val in row_changes.items():
+                    if col_name in res_df.columns:
+                        res_df.at[r_i, col_name] = val
+        except Exception:
+            pass
+
+    # 2. Видалення рядків
+    deleted_rows = edits.get("deleted_rows", [])
+    if deleted_rows:
+        valid_del = [int(i) for i in deleted_rows if int(i) < len(res_df)]
+        if valid_del:
+            res_df = res_df.drop(index=valid_del).reset_index(drop=True)
+
+    # 3. Додавання нових рядків
+    added_rows = edits.get("added_rows", [])
+    if added_rows:
+        clean_added = []
+        for a_row in added_rows:
+            row_dict = {col: a_row.get(col, None) for col in res_df.columns}
+            for k, v in a_row.items():
+                row_dict[k] = v
+            clean_added.append(row_dict)
+        if clean_added:
+            added_df = pd.DataFrame(clean_added)
+            res_df = pd.concat([res_df, added_df], ignore_index=True)
+
+    return res_df
+
+# Колбек синхронізації тижнів із збереженням усіх набраних даних
 def on_max_weeks_change():
     new_max = st.session_state.get("max_weeks_input", 15)
+    
+    # Спочатку зберігаємо всі введені групи з редактора в session_state
+    if "groups_editor" in st.session_state and 'cfg_groups' in st.session_state:
+        st.session_state.cfg_groups = apply_editor_changes(st.session_state.cfg_groups, "groups_editor")
+        del st.session_state["groups_editor"]
+
+    # Оновлюємо кількість тижнів
     if 'cfg_groups' in st.session_state and isinstance(st.session_state.cfg_groups, pd.DataFrame):
         if "Кількість тижнів" in st.session_state.cfg_groups.columns:
             st.session_state.cfg_groups["Кількість тижнів"] = st.session_state.cfg_groups["Кількість тижнів"].apply(
-                lambda x: min(int(x), new_max) if pd.notnull(x) else new_max
+                lambda x: min(int(x), new_max) if pd.notnull(x) and str(x).isdigit() else new_max
             )
-    if "groups_editor" in st.session_state:
-        del st.session_state["groups_editor"]
 
 # 1. Параметри навчального семестру
 st.markdown("### 1. Параметри сітки розкладу")
@@ -223,6 +273,8 @@ with col_g:
         use_container_width=True,
         key="groups_editor"
     )
+    # Постійне збереження стану таблиці груп в сесію
+    st.session_state.cfg_groups = groups_df
 
 with col_t:
     st.markdown("**Список викладачів**")
@@ -231,6 +283,7 @@ with col_t:
         st.session_state.cfg_teachers,
         height=140
     )
+    st.session_state.cfg_teachers = teachers_text
 
 with col_r:
     st.markdown("**Аудиторний фонд**")
@@ -239,6 +292,7 @@ with col_r:
         st.session_state.cfg_rooms,
         height=140
     )
+    st.session_state.cfg_rooms = rooms_text
 
 active_groups_df = groups_df.dropna(subset=["Група"]).copy()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()]
@@ -293,6 +347,7 @@ limits_df = st.data_editor(
     use_container_width=True,
     key="limits_editor_grid"
 )
+st.session_state.cfg_limits = limits_df
 
 # 4. Навчальний план дисциплін
 st.markdown("### 4. Навчальний план дисциплін")
@@ -312,6 +367,7 @@ curriculum_df = st.data_editor(
     use_container_width=True,
     key="curriculum_editor_grid"
 )
+st.session_state.cfg_curriculum = curriculum_df
 
 config_export_data = {
     "groups": groups_df.to_dict(orient="records"),
