@@ -50,7 +50,7 @@ if 'cfg_teachers' not in st.session_state:
     st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1 авдиторія\n32 авдиторія\n27-А Комп'ютерний клас\nОНЛАЙН\nСпортзал"
+    st.session_state.cfg_rooms = "1 відиторія\n32 авдиторія\n27-А Комп'ютерний клас\nОНЛАЙН\nСпортзал"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
@@ -235,44 +235,13 @@ with col_r:
         key="cfg_rooms"
     )
 
-# Формування повних списків викладачів та аудиторій (текстове поле + все, що вже є в таблицях)
-base_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
-active_teachers = list(base_teachers)
-for df_src in [st.session_state.cfg_limits, st.session_state.cfg_curriculum]:
-    if not df_src.empty and "Викладач" in df_src.columns:
-        for t in df_src["Викладач"].dropna():
-            t_s = str(t).strip()
-            if t_s and t_s not in active_teachers and t_s != "None":
-                active_teachers.append(t_s)
-if not active_teachers:
-    active_teachers = ["Черненко В.П."]
-
-base_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
-active_rooms = list(base_rooms)
-if not st.session_state.cfg_curriculum.empty and "Аудиторія" in st.session_state.cfg_curriculum.columns:
-    for r in st.session_state.cfg_curriculum["Аудиторія"].dropna():
-        r_s = str(r).strip()
-        if r_s and r_s not in active_rooms and r_s != "None":
-            active_rooms.append(r_s)
-if not active_rooms:
-    active_rooms = ["1"]
+# Формування списків для довідки
+active_teachers_list = [t.strip() for t in teachers_text.split("\n") if t.strip()]
+active_rooms_list = [r.strip() for r in rooms_text.split("\n") if r.strip()]
 
 active_groups_df = groups_df.dropna(subset=["Група"]).copy() if not groups_df.empty else pd.DataFrame()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()] if not active_groups_df.empty else []
-for g_val in st.session_state.cfg_curriculum["Групи"].dropna():
-    if isinstance(g_val, list):
-        for cg in g_val:
-            cg_s = str(cg).strip()
-            if cg_s and cg_s not in active_groups:
-                active_groups.append(cg_s)
-    elif isinstance(g_val, str):
-        for cg in g_val.split(","):
-            cg_s = str(cg).strip()
-            if cg_s and cg_s not in active_groups:
-                active_groups.append(cg_s)
-
-if not active_groups:
-    active_groups = ["ПО-11Б"]
+if not active_groups: active_groups = ["ПО-11Б"]
 
 group_weeks_map = {}
 if not active_groups_df.empty:
@@ -284,12 +253,14 @@ if not active_groups_df.empty:
 
 # 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
+if active_teachers_list:
+    st.info(f"💡 Доступні викладачі з довідника вище: " + ", ".join([f"**{t}**" for t in active_teachers_list]))
 
 limits_df = st.data_editor(
     st.session_state.cfg_limits,
     num_rows="dynamic",
     column_config={
-        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
+        "Викладач": st.column_config.TextColumn(required=True, help="Введіть ПІБ викладача точно як у довіднику"),
         "День тижня": st.column_config.SelectboxColumn(options=["Всі дні"] + ACTIVE_DAYS, required=True),
         "Недоступні пари": st.column_config.MultiselectColumn(options=["Всі пари"] + ACTIVE_SLOT_OPTIONS, required=True)
     },
@@ -298,8 +269,10 @@ limits_df = st.data_editor(
 )
 st.session_state.cfg_limits = limits_df
 
-# 4. Навчальний план дисциплін (з випадаючими списками для викладачів та аудиторій)
+# 4. Навчальний план дисциплін
 st.markdown("### 4. Навчальний план дисциплін")
+if active_rooms_list:
+    st.info(f"💡 Доступні аудиторії з довідника вище: " + ", ".join([f"**{r}**" for r in active_rooms_list]))
 
 curriculum_df = st.data_editor(
     st.session_state.cfg_curriculum,
@@ -307,11 +280,11 @@ curriculum_df = st.data_editor(
     column_config={
         "Групи": st.column_config.MultiselectColumn(options=active_groups, required=True, help="Оберіть 1 або кілька груп"),
         "Предмет": st.column_config.TextColumn(required=True),
-        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
+        "Викладач": st.column_config.TextColumn(required=True, help="Введіть ПІБ викладача"),
         "Годин на семестр": st.column_config.NumberColumn(min_value=10, max_value=300, step=10, default=30, required=True),
         "Формат": st.column_config.SelectboxColumn(options=["Очно", "Онлайн"], required=True, default="Очно"),
         "Потокова лекція?": st.column_config.SelectboxColumn(options=["Ні", "Так"], required=True, default="Ні"),
-        "Аудиторія": st.column_config.SelectboxColumn(options=active_rooms, required=True)
+        "Аудиторія": st.column_config.TextColumn(required=True, help="Введіть номер аудиторії або 'спортзал'")
     },
     use_container_width=True,
     key="curriculum_editor_grid"
