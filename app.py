@@ -47,10 +47,10 @@ if 'cfg_groups' not in st.session_state:
     ])
 
 if 'cfg_teachers' not in st.session_state:
-    st.session_state.cfg_teachers = "Черненко В.П.\nШкляєва Г.О."
+    st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1\n 27-А Комп'ютерний клас\n32\nОНЛАЙН"
+    st.session_state.cfg_rooms = "1\n15\n27-А аудиторія\n32\n27-А Комп'ютерний клас\nОНЛАЙН"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
@@ -65,12 +65,12 @@ if 'cfg_curriculum' not in st.session_state:
             "Викладач": "Усатенко В.М.",
             "Годин на семестр": 30,
             "Формат": "Очно",
-            "Потокова лекція?": "Ні",
+            "Потокова лекція": "Ні",
             "Аудиторія": "32"
         }
     ])
 
-# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ ---
+# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХЗ ПОВНОЮ СУМІСНІСТЮ ---
 st.markdown("### 💾 Збереження та відновлення налаштувань")
 col_imp, col_exp = st.columns(2)
 
@@ -79,7 +79,6 @@ with col_imp:
     if uploaded_file is not None:
         file_id = f"{uploaded_file.name}_{uploaded_file.size}"
         
-        # Обробляємо файл лише 1 раз, щоб уникнути зациклення rerun
         if st.session_state.last_processed_file != file_id:
             try:
                 config = json.load(uploaded_file)
@@ -95,12 +94,14 @@ with col_imp:
                         g_dict["Кількість тижнів"] = max_weeks
                     adapted_groups.append(g_dict)
 
-                # 2. Адаптація навчального плану
+                # 2. Адаптація навчального плану (Група -> Групи, Аудиторія / Формат -> Аудиторія)
                 raw_curriculum = config.get("curriculum", [])
                 adapted_curriculum = []
                 for c_item in raw_curriculum:
                     c_dict = dict(c_item)
-                    if "Група" in c_dict and "Групи" not in c_dict:
+                    
+                    # Конвертація "Група"
+                    if "Група" in c_dict and ("Групи" not in c_dict or not c_dict["Групи"]):
                         g_val = c_dict.pop("Група")
                         if isinstance(g_val, str):
                             c_dict["Групи"] = [g.strip() for g in g_val.split(",") if g.strip()]
@@ -112,6 +113,15 @@ with col_imp:
                         if isinstance(c_dict["Групи"], str):
                             c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
 
+                    # Конвертація "Аудиторія / Формат" -> "Аудиторія"
+                    if "Аудиторія / Формат" in c_dict:
+                        old_room = c_dict.pop("Аудиторія / Формат")
+                        if "Аудиторія" not in c_dict or not c_dict["Аудиторія"]:
+                            c_dict["Аудиторія"] = str(old_room).strip() if pd.notnull(old_room) else "1 аудиторія"
+
+                    if "Формат" not in c_dict: c_dict["Формат"] = "Очно"
+                    if "Потокова лекція?" not in c_dict: c_dict["Потокова лекція?"] = "Ні"
+
                     adapted_curriculum.append(c_dict)
 
                 st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
@@ -121,12 +131,12 @@ with col_imp:
                 st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
                 st.session_state.last_processed_file = file_id
                 
-                # Скидання клейм кешу редакторів
+                # Очищення віджетів
                 for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
                     if key in st.session_state:
                         del st.session_state[key]
 
-                st.success("Дані успішно завантажено!")
+                st.success("Дані завантажено успішно!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Помилка зчитування файлу: {e}")
@@ -165,11 +175,33 @@ with col_r:
         height=140
     )
 
-# Парсинг довідників
+# Парсинг та гарантія того, що всі значення з плану є в довідниках
 active_groups_df = groups_df.dropna(subset=["Група"]).copy()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()]
-if not active_groups:
-    active_groups = ["ПО-11Б"]
+
+active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
+active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
+
+# Синхронізація списків з урахуванням відновленого плану
+if not st.session_state.cfg_curriculum.empty:
+    for _, c_row in st.session_state.cfg_curriculum.iterrows():
+        # Перевірка груп
+        c_g_list = c_row.get("Групи", [])
+        if isinstance(c_g_list, list):
+            for cg in c_g_list:
+                if cg and cg not in active_groups: active_groups.append(cg)
+        # Перевірка викладача
+        c_t = str(c_row.get("Викладач", "")).strip()
+        if c_t and c_t not in active_teachers and c_t != "None":
+            active_teachers.append(c_t)
+        # Перевірка аудиторії
+        c_r = str(c_row.get("Аудиторія", "")).strip()
+        if c_r and c_r not in active_rooms and c_r != "None":
+            active_rooms.append(c_r)
+
+if not active_groups: active_groups = ["ПО-11Б"]
+if not active_teachers: active_teachers = ["Черненко В.П."]
+if not active_rooms: active_rooms = ["1 аудиторія"]
 
 group_weeks_map = {}
 for _, g_row in active_groups_df.iterrows():
@@ -177,14 +209,6 @@ for _, g_row in active_groups_df.iterrows():
     g_w = int(g_row.get("Кількість тижнів", max_weeks)) if pd.notnull(g_row.get("Кількість тижнів")) else max_weeks
     if g_n:
         group_weeks_map[g_n] = min(g_w, max_weeks)
-
-active_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
-if not active_teachers:
-    active_teachers = ["Черненко В.П."]
-
-active_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
-if not active_rooms:
-    active_rooms = ["1 аудиторія"]
 
 # 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
@@ -220,7 +244,7 @@ curriculum_df = st.data_editor(
     key="curriculum_editor_grid"
 )
 
-# Формування даних для експорту налаштувань
+# Експорт даних
 config_export_data = {
     "groups": groups_df.to_dict(orient="records"),
     "teachers": teachers_text,
@@ -240,7 +264,7 @@ with col_exp:
         use_container_width=True
     )
 
-# Функція підсвічування осередків
+# Стилізація
 def style_schedule_grid(val):
     if not isinstance(val, str) or val == "-" or not val:
         return ""
@@ -256,7 +280,7 @@ def style_schedule_grid(val):
     else:
         return "background-color: #F5F5F5; color: #000000;"
 
-# --- МАТЕМАТИЧНИЙ АЛГОРИТМ БАГАТОТИЖНЕВОЇ ГЕНЕРАЦІЇ ---
+# Генерація
 def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels, slot_opts, grp_df, grp_w_map, lim_df, plan_df):
     if grp_df.empty or plan_df.empty:
         return None, "Будь ласка, заповніть групи та навчальний план."
@@ -507,7 +531,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
 
     return schedule_records, None
 
-# Кнопка запуску
+# Запуск
 if st.button("Згенерувати розклад", type="primary"):
     with st.spinner("Обчислення оптимального розкладу на весь семестр..."):
         res_records, err = generate_full_semester_schedule(
@@ -519,7 +543,7 @@ if st.button("Згенерувати розклад", type="primary"):
     if err:
         st.error(err)
     else:
-        st.success("Розклад на весь семестр успішно згенеровано!")
+        st.success("Розклад успішно згенеровано!")
         st.session_state.schedule_data = {
             "records": res_records,
             "max_weeks": max_weeks,
@@ -530,7 +554,7 @@ if st.button("Згенерувати розклад", type="primary"):
             "groups_df": groups_df
         }
 
-# --- ВІДОБРАЖЕННЯ ТА ЕКСПОРТ РЕЗУЛЬТАТІВ ---
+# Результати
 if st.session_state.schedule_data is not None:
     st.markdown("---")
     st.markdown("### 📊 Перегляд та експорт розкладу")
@@ -616,7 +640,7 @@ if st.session_state.schedule_data is not None:
         styled_t = df_teacher_view.style.map(style_schedule_grid)
         st.dataframe(styled_t, use_container_width=True, height=600)
 
-    # --- ЕКСПОРТ В EXCEL ---
+    # Експорт в Excel
     st.markdown("#### 📥 Завантаження розкладу в Excel")
     
     buffer_all = io.BytesIO()
