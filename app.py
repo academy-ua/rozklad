@@ -98,10 +98,16 @@ def handle_json_upload():
 
             # 2. Парсинг викладачів та аудиторій
             raw_t = config.get("teachers", "")
-            teachers_str = "\n".join(raw_t) if isinstance(raw_t, list) else str(raw_t)
+            if isinstance(raw_t, list):
+                teachers_str = "\n".join([str(t).strip() for t in raw_t if str(t).strip()])
+            else:
+                teachers_str = str(raw_t)
             
             raw_r = config.get("rooms", "")
-            rooms_str = "\n".join(raw_r) if isinstance(raw_r, list) else str(raw_r)
+            if isinstance(raw_r, list):
+                rooms_str = "\n".join([str(r).strip() for r in raw_r if str(r).strip()])
+            else:
+                rooms_str = str(raw_r)
 
             # 3. Парсинг навчального плану
             raw_curriculum = config.get("curriculum", [])
@@ -160,8 +166,10 @@ def handle_json_upload():
 
             if adapted_groups:
                 st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
-            st.session_state.cfg_teachers = teachers_str
-            st.session_state.cfg_rooms = rooms_str
+            if teachers_str:
+                st.session_state.cfg_teachers = teachers_str
+            if rooms_str:
+                st.session_state.cfg_rooms = rooms_str
             if adapted_limits:
                 st.session_state.cfg_limits = pd.DataFrame(adapted_limits)
             if adapted_curriculum:
@@ -227,11 +235,44 @@ with col_r:
         key="cfg_rooms"
     )
 
-# Отримання списків для валідації та генерації
+# Формування повних списків викладачів та аудиторій (текстове поле + все, що вже є в таблицях)
+base_teachers = [t.strip() for t in teachers_text.split("\n") if t.strip()]
+active_teachers = list(base_teachers)
+for df_src in [st.session_state.cfg_limits, st.session_state.cfg_curriculum]:
+    if not df_src.empty and "Викладач" in df_src.columns:
+        for t in df_src["Викладач"].dropna():
+            t_s = str(t).strip()
+            if t_s and t_s not in active_teachers and t_s != "None":
+                active_teachers.append(t_s)
+if not active_teachers:
+    active_teachers = ["Черненко В.П."]
+
+base_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
+active_rooms = list(base_rooms)
+if not st.session_state.cfg_curriculum.empty and "Аудиторія" in st.session_state.cfg_curriculum.columns:
+    for r in st.session_state.cfg_curriculum["Аудиторія"].dropna():
+        r_s = str(r).strip()
+        if r_s and r_s not in active_rooms and r_s != "None":
+            active_rooms.append(r_s)
+if not active_rooms:
+    active_rooms = ["1"]
+
 active_groups_df = groups_df.dropna(subset=["Група"]).copy() if not groups_df.empty else pd.DataFrame()
 active_groups = [str(g).strip() for g in active_groups_df["Група"].tolist() if str(g).strip()] if not active_groups_df.empty else []
+for g_val in st.session_state.cfg_curriculum["Групи"].dropna():
+    if isinstance(g_val, list):
+        for cg in g_val:
+            cg_s = str(cg).strip()
+            if cg_s and cg_s not in active_groups:
+                active_groups.append(cg_s)
+    elif isinstance(g_val, str):
+        for cg in g_val.split(","):
+            cg_s = str(cg).strip()
+            if cg_s and cg_s not in active_groups:
+                active_groups.append(cg_s)
 
-if not active_groups: active_groups = ["ПО-11Б"]
+if not active_groups:
+    active_groups = ["ПО-11Б"]
 
 group_weeks_map = {}
 if not active_groups_df.empty:
@@ -241,14 +282,14 @@ if not active_groups_df.empty:
         if g_n:
             group_weeks_map[g_n] = g_w
 
-# 3. Обмеження викладачів (Викладач тепер текстове поле -> не може спричинити зникнення даних)
+# 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
 
 limits_df = st.data_editor(
     st.session_state.cfg_limits,
     num_rows="dynamic",
     column_config={
-        "Викладач": st.column_config.TextColumn(required=True, help="ПІБ викладача"),
+        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
         "День тижня": st.column_config.SelectboxColumn(options=["Всі дні"] + ACTIVE_DAYS, required=True),
         "Недоступні пари": st.column_config.MultiselectColumn(options=["Всі пари"] + ACTIVE_SLOT_OPTIONS, required=True)
     },
@@ -257,7 +298,7 @@ limits_df = st.data_editor(
 )
 st.session_state.cfg_limits = limits_df
 
-# 4. Навчальний план дисциплін (Викладач та Аудиторія тепер текстові поля -> повна стабільність)
+# 4. Навчальний план дисциплін (з випадаючими списками для викладачів та аудиторій)
 st.markdown("### 4. Навчальний план дисциплін")
 
 curriculum_df = st.data_editor(
@@ -266,11 +307,11 @@ curriculum_df = st.data_editor(
     column_config={
         "Групи": st.column_config.MultiselectColumn(options=active_groups, required=True, help="Оберіть 1 або кілька груп"),
         "Предмет": st.column_config.TextColumn(required=True),
-        "Викладач": st.column_config.TextColumn(required=True, help="ПІБ викладача"),
+        "Викладач": st.column_config.SelectboxColumn(options=active_teachers, required=True),
         "Годин на семестр": st.column_config.NumberColumn(min_value=10, max_value=300, step=10, default=30, required=True),
         "Формат": st.column_config.SelectboxColumn(options=["Очно", "Онлайн"], required=True, default="Очно"),
         "Потокова лекція?": st.column_config.SelectboxColumn(options=["Ні", "Так"], required=True, default="Ні"),
-        "Аудиторія": st.column_config.TextColumn(required=True, help="Номер аудиторії або 'спортзал'")
+        "Аудиторія": st.column_config.SelectboxColumn(options=active_rooms, required=True)
     },
     use_container_width=True,
     key="curriculum_editor_grid"
