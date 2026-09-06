@@ -64,13 +64,19 @@ if 'cfg_teachers' not in st.session_state:
     st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1 аудиторія\n15 аудиторія\n27-А Комп'ютерний клас\nОНЛАЙН\nСпортзал"
+    st.session_state.cfg_rooms = "1 авдиторія\n15 авдиторія\n27-А Комп'ютерний клас\nОНЛАЙН\nСпортзал"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
         {"Викладач": "Усатенко В.М.", "День тижня": "Вівторок", "Недоступні пари": ["Всі пари"]}
     ])
 
+# ВИПРАВЛЕНО: назви колонок узгоджені з column_config нижче та з
+# generate_full_semester_schedule (там читаються "Предмет",
+# "Потокова лекція?", "Аудиторія"). Раніше тут були назви
+# "Дисципліна" / "Потокова лекція" / "Авдиторія", через що
+# row.get("Предмет") завжди повертав None і жодне заняття
+# не потрапляло у розклад ("Не знайдено заповнених предметів").
 if 'cfg_curriculum' not in st.session_state:
     st.session_state.cfg_curriculum = pd.DataFrame([
         {
@@ -216,6 +222,7 @@ st.markdown("### 2. Довідники закладу")
 col_g, col_t, col_r = st.columns(3)
 
 with col_g:
+    st.markdown("**Академічні групи та тривалість навчання**")
     groups_df = st.data_editor(
         st.session_state.cfg_groups,
         num_rows="dynamic",
@@ -227,9 +234,9 @@ with col_g:
         use_container_width=True,
         key="groups_editor"
     )
-    st.session_state.cfg_groups = groups_df
 
 with col_t:
+    st.markdown("**Список викладачів**")
     teachers_text = st.text_area(
         "ПІБ викладачів (кожен з нового рядка)",
         height=140,
@@ -237,6 +244,7 @@ with col_t:
     )
 
 with col_r:
+    st.markdown("**Аудиторний фонд**")
     rooms_text = st.text_area(
         "Аудиторії (кожна з нового рядка)",
         height=140,
@@ -256,6 +264,11 @@ if not active_teachers:
     active_teachers = ["Черненко В.П."]
 
 base_rooms = [r.strip() for r in rooms_text.split("\n") if r.strip()]
+active_rooms_pool = [r for r in base_rooms if r.upper() not in ["ОНЛАЙН", "СПОРТЗАЛ"]]
+if not active_rooms_pool:
+    active_rooms_pool = ["1", "15", "32"]
+
+# Опції для вибору аудиторії в плані: автопідбір + всі аудиторії з фонду
 curriculum_room_options = ["✨ Автоматичний підбір з фонду"] + base_rooms
 
 active_groups_df = groups_df.dropna(subset=["Група"]).copy() if not groups_df.empty else pd.DataFrame()
@@ -297,7 +310,6 @@ limits_df = st.data_editor(
     use_container_width=True,
     key="limits_editor_grid"
 )
-st.session_state.cfg_limits = limits_df
 
 # 4. Навчальний план дисциплін
 st.markdown("### 4. Навчальний план дисциплін")
@@ -311,12 +323,11 @@ curriculum_df = st.data_editor(
         "Годин на семестр": st.column_config.NumberColumn(min_value=10, max_value=300, step=10, default=30, required=True),
         "Формат": st.column_config.SelectboxColumn(options=["Очно", "Онлайн"], required=True, default="Очно"),
         "Потокова лекція?": st.column_config.SelectboxColumn(options=["Ні", "Так"], required=True, default="Ні"),
-        "Аудиторія": st.column_config.SelectboxColumn(options=curriculum_room_options, required=True)
+        "Аудиторія": st.column_config.SelectboxColumn(options=curriculum_room_options, required=True, help="Оберіть конкретну або автопідбір")
     },
     use_container_width=True,
     key="curriculum_editor_grid"
 )
-st.session_state.cfg_curriculum = curriculum_df
 
 # Експорт актуального стану
 config_export_data = {
@@ -440,12 +451,15 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
     if not semester_lessons:
         return None, "Не знайдено заповнених предметів."
 
-    x = {}
+    # Змінні часу та місця
+    x = {} # x[l_id, w, d, s] = 1, якщо заняття на тижні w, день d, слот s
+    
+    # Визначаємо доступні для автопідбору аудиторії (виключаємо онлайн і спортзал зі звичайного пулу автопідбору)
     auto_pool = [r for r in pool_rooms if r.upper() not in ["ОНЛАЙН", "СПОРТЗАЛ"]]
     if not auto_pool:
         auto_pool = ["1", "15", "32"]
 
-    room_vars = {}
+    room_vars = {} # Для занять з автопідбором: room_vars[l_id, w, d, s, r] = bool
     
     for l in semester_lessons:
         eff_w = l["eff_weeks"]
@@ -456,14 +470,20 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                 for s in range(s_cnt):
                     x[l["id"], w, d, s] = model.NewBoolVar(f'x_{l["id"]}_{w}_{d}_{s}')
                     
-                    if rc == "✨ Автоматичний підбір з фонду" and l["fmt"] != "Онлайн":
-                        for r in auto_pool:
-                            room_vars[l["id"], w, d, s, r] = model.NewBoolVar(f'room_{l["id"]}_{w}_{d}_{s}_{r}')
+                    if rc == "✨ Автоматичний підбір з фонду":
+                        if l["fmt"] == "Онлайн":
+                            # Для онлайн автопідбір не потрібен, кімната завжди "ОНЛАЙН"
+                            pass
+                        else:
+                            for r in auto_pool:
+                                room_vars[l["id"], w, d, s, r] = model.NewBoolVar(f'room_{l["id"]}_{w}_{d}_{s}_{r}')
 
+    # Кожне заняття має відбутися рівно 1 раз за семестр
     for l in semester_lessons:
         eff_w = l["eff_weeks"]
         model.Add(sum(x[l["id"], w, d, s] for w in range(eff_w) for d in range(d_cnt) for s in range(s_cnt)) == 1)
 
+    # Зв'язок між часом і вибором аудиторії для автопідбору
     for l in semester_lessons:
         if l["room_choice"] == "✨ Автоматичний підбір з фонду" and l["fmt"] != "Онлайн":
             eff_w = l["eff_weeks"]
@@ -472,8 +492,10 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     for s in range(s_cnt):
                         active_rooms_for_lesson = [room_vars[l["id"], w, d, s, r] for r in auto_pool if (l["id"], w, d, s, r) in room_vars]
                         if active_rooms_for_lesson:
+                            # Якщо пара стоїть (x=1), то має бути обрана рівно 1 аудиторія з пулу
                             model.Add(sum(active_rooms_for_lesson) == x[l["id"], w, d, s])
 
+    # Рівномірний розподіл пар по тижнях
     spec_groups_map = {}
     for l in semester_lessons:
         spec_groups_map.setdefault((l["spec_id"], l["eff_weeks"]), []).append(l)
@@ -486,6 +508,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
             model.Add(week_pairs_count >= base_p_per_week)
             model.Add(week_pairs_count <= base_p_per_week + 1)
 
+    # Уникаємо конфліктів у студентських групах (не можна ставити групі 2 пари одночасно)
     for g in all_registered_groups:
         g_w = grp_w_map.get(g, max_w)
         for w in range(g_w):
@@ -495,6 +518,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     if g_active_lessons:
                         model.Add(sum(x[l["id"], w, d, s] for l in g_active_lessons) <= 1)
 
+    # Заборона вікон
     if no_windows:
         for g in all_registered_groups:
             g_w = grp_w_map.get(g, max_w)
@@ -510,6 +534,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                                     y_s3 = sum(x[l["id"], w, d, s3] for l in g_active_lessons)
                                     model.Add(y_s1 - y_s2 + y_s3 <= 1)
 
+    # День практики
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
         p_d = str(g_row.get("День практики", "Немає")).strip()
@@ -523,6 +548,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                         for s in range(s_cnt):
                             model.Add(x[l["id"], w, p_idx, s] == 0)
 
+    # Обмеження викладачів
     if not lim_df.empty:
         for _, lim_row in lim_df.iterrows():
             t_n = str(lim_row.get("Викладач", "")).strip()
@@ -559,6 +585,7 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                                 if w < l["eff_weeks"]:
                                     model.Add(x[l["id"], w, d_idx, s_idx] == 0)
 
+    # Уникаємо конфліктів у викладачів (викладач не може вести дві пари одночасно)
     all_teachers = list(set([l["teacher"] for l in semester_lessons if l["teacher"]]))
     for t in all_teachers:
         t_lessons = [l for l in semester_lessons if l["teacher"] == t]
@@ -579,23 +606,34 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                         t_day_count = sum(x[l["id"], w, d, s] for l in t_w_lessons for s in range(s_cnt))
                         model.Add(t_day_count != 1)
 
+    # Захист від конфліктів фізичних аудиторій (жодна аудиторія не може бути зайнята двома різними речами одночасно)
     for w in range(max_w):
         for d in range(d_cnt):
             for s in range(s_cnt):
+                # Перевіряємо кожну аудиторію з фонду
                 for r in auto_pool:
+                    # Збираємо всі заняття, які претендують на цю аудиторію (або явно вказано, або обрано автопідбором)
                     lessons_using_room = []
                     for l in semester_lessons:
                         if w < l["eff_weeks"]:
                             if l["room_choice"] == r:
                                 lessons_using_room.append(l)
+                            elif l["room_choice"] == "✨ Автоматичний підбір з фонду" and (l["id"], w, d, s, r) in room_vars:
+                                # Використовуємо булеву змінну вибору кімнати
+                                pass # Обробляємо нижче через суму room_vars
+
+                    # ВИПРАВЛЕНО: раніше через "l_list[:1]" у сумі враховувалась
+                    # лише перша пара кожного предмета/викладача, тому наступні
+                    # пари того ж предмета з явно закріпленою аудиторією не
+                    # перевірялись на накладки з іншими предметами в тій самій
+                    # аудиторії. Тепер враховуємо усі заняття, закріплені за цією
+                    # аудиторією в цей конкретний час.
+                    fixed_sum = sum(x[l["id"], w, d, s] for l in lessons_using_room)
                     
-                    spec_fixed_dict = {}
-                    for l in lessons_using_room:
-                        spec_fixed_dict.setdefault(l["spec_id"], []).append(l)
-                    
-                    fixed_sum = sum(x[l["id"], w, d, s] for l_list in spec_fixed_dict.values() for l in l_list[:1])
+                    # Сума автопідбору для цієї аудиторії в цей час
                     auto_sum = sum(room_vars[l["id"], w, d, s, r] for l in semester_lessons if w < l["eff_weeks"] and (l["id"], w, d, s, r) in room_vars)
                     
+                    # Загальна зайнятість аудиторії r не може перевищувати 1
                     model.Add(fixed_sum + auto_sum <= 1)
 
     penalties = []
@@ -619,17 +657,20 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
     if status not in [OPTIMAL, FEASIBLE]:
         return None, "Не вдалося розставити розклад. Перевірте, чи вистачає аудиторій у фонді або чи немає накладок у викладачів."
 
+    # Збираємо результати
     schedule_records = []
     for l in semester_lessons:
         for w in range(l["eff_weeks"]):
             for d in range(d_cnt):
                 for s in range(s_cnt):
                     if solver.Value(x[l["id"], w, d, s]) == 1:
+                        # Визначаємо фінальну аудиторію
                         if l["fmt"] == "Онлайн":
                             final_room = "ОНЛАЙН"
                         elif l["room_choice"] != "✨ Автоматичний підбір з фонду":
                             final_room = l["room_choice"]
                         else:
+                            # Шукаємо, яку саме аудиторію обрав solver для цього слота
                             chosen_room = "1"
                             for r in auto_pool:
                                 if (l["id"], w, d, s, r) in room_vars and solver.Value(room_vars[l["id"], w, d, s, r]) == 1:
