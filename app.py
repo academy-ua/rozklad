@@ -20,7 +20,7 @@ SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
-# 1. Параметри навчального семестру (початкові параметри)
+# 1. Параметри навчального семестру
 st.markdown("### 1. Параметри сітки розкладу")
 col_w, col_d, col_s = st.columns(3)
 with col_w:
@@ -44,30 +44,30 @@ if 'cfg_groups' not in st.session_state:
     ])
 
 if 'cfg_teachers' not in st.session_state:
-    st.session_state.cfg_teachers = "Черненко В.П.\nШкляєва Г.О."
+    st.session_state.cfg_teachers = "Усатенко В.М."
 
 if 'cfg_rooms' not in st.session_state:
-    st.session_state.cfg_rooms = "1 аудиторія\nКомп'ютерний клас\n32 аудиторія\nОНЛАЙН"
+    st.session_state.cfg_rooms = "1\n 27-А Комп'ютерний клас\n32\nОНЛАЙН"
 
 if 'cfg_limits' not in st.session_state:
     st.session_state.cfg_limits = pd.DataFrame([
-        {"Викладач": "Черненко В.П.", "День тижня": "Вівторок", "Недоступні пари": ["Всі пари"]}
+        {"Викладач": "Усатенко В.М.", "День тижня": "Вівторок", "Недоступні пари": ["Всі пари"]}
     ])
 
 if 'cfg_curriculum' not in st.session_state:
     st.session_state.cfg_curriculum = pd.DataFrame([
         {
             "Групи": ["ПО-11Б"],
-            "Предмет": "Математика",
-            "Викладач": "Черненко В.П.",
+            "Предмет": "Педагогіка",
+            "Викладач": "Усатенко В.М.",
             "Годин на семестр": 30,
             "Формат": "Очно",
             "Потокова лекція?": "Ні",
-            "Аудиторія": "1 аудиторія"
+            "Аудиторія": "32"
         }
     ])
 
-# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ З АВТОАДАПТАЦІЄЮ СТАРИХ ФАЙЛІВ ---
+# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ З ПОВНОЮ АДАПТАЦІЄЮ ---
 st.markdown("### 💾 Збереження та відновлення налаштувань")
 col_imp, col_exp = st.columns(2)
 
@@ -77,28 +77,52 @@ with col_imp:
         try:
             config = json.load(uploaded_file)
             
-            # Адаптація списку груп під нову структуру з тижнями
+            # 1. Адаптація списку груп під тижні
             raw_groups = config.get("groups", [])
             adapted_groups = []
             for g_item in raw_groups:
                 g_dict = dict(g_item)
-                # Видаляємо старе поле формату, якщо воно було
-                if "Формат за замовчуванням" in g_dict:
-                    del g_dict["Формат за замовчуванням"]
-                if "Формат" in g_dict:
-                    del g_dict["Формат"]
-                # Додаємо кількість тижнів, якщо її немає у старому файлі
+                if "Формат за замовчуванням" in g_dict: del g_dict["Формат за замовчуванням"]
+                if "Формат" in g_dict: del g_dict["Формат"]
                 if "Кількість тижнів" not in g_dict or pd.isnull(g_dict["Кількість тижнів"]):
                     g_dict["Кількість тижнів"] = max_weeks
                 adapted_groups.append(g_dict)
 
+            # 2. Адаптація навчального плану (конвертація "Група" -> "Групи")
+            raw_curriculum = config.get("curriculum", [])
+            adapted_curriculum = []
+            for c_item in raw_curriculum:
+                c_dict = dict(c_item)
+                
+                # Якщо у старому файлі колонка називалася "Група"
+                if "Група" in c_dict and "Групи" not in c_dict:
+                    g_val = c_dict.pop("Група")
+                    if isinstance(g_val, str):
+                        c_dict["Групи"] = [g.strip() for g in g_val.split(",") if g.strip()]
+                    elif isinstance(g_val, list):
+                        c_dict["Групи"] = g_val
+                    else:
+                        c_dict["Групи"] = []
+                elif "Групи" in c_dict:
+                    if isinstance(c_dict["Групи"], str):
+                        c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
+
+                adapted_curriculum.append(c_dict)
+
+            # Оновлення сесії
             st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
             st.session_state.cfg_teachers = config.get("teachers", "")
             st.session_state.cfg_rooms = config.get("rooms", "")
             st.session_state.cfg_limits = pd.DataFrame(config.get("limits", []))
-            st.session_state.cfg_curriculum = pd.DataFrame(config.get("curriculum", []))
+            st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
             
-            st.success("Дані успішно завантажено та адаптовано під нову систему тижнів!")
+            # Скидання кешу віджетів Streamlit для примусового оновлення таблиць
+            for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+
+            st.success("Дані успішно завантажено! Дисципліни та групи відновлено.")
+            st.rerun()
         except Exception as e:
             st.error(f"Помилка зчитування файлу: {e}")
 
@@ -235,7 +259,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
     model = CpModel()
     all_registered_groups = [g for g in grp_df["Група"].dropna().unique().tolist() if str(g).strip()]
 
-    # Збір дисциплін
     raw_lessons = []
     for _, row in plan_df.iterrows():
         g_raw = row.get("Групи", [])
@@ -266,7 +289,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
             "room": room
         })
 
-    # Об'єднання потокових предметів
     stream_dict = {}
     non_stream_lessons = []
 
@@ -290,7 +312,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
 
     final_specs = list(stream_dict.values()) + non_stream_lessons
 
-    # Генерація окремих пар на весь семестр
     semester_lessons = []
     lesson_id = 0
 
@@ -324,12 +345,10 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                 for s in range(s_cnt):
                     x[l["id"], w, d, s] = model.NewBoolVar(f'x_{l["id"]}_{w}_{d}_{s}')
 
-    # 1. Рівно 1 проведення кожної пари за семестр
     for l in semester_lessons:
         eff_w = l["eff_weeks"]
         model.Add(sum(x[l["id"], w, d, s] for w in range(eff_w) for d in range(d_cnt) for s in range(s_cnt)) == 1)
 
-    # 2. Рівномірний розподіл пар дисципліни по тижнях
     spec_groups_map = {}
     for l in semester_lessons:
         spec_groups_map.setdefault((l["spec_id"], l["eff_weeks"]), []).append(l)
@@ -342,7 +361,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
             model.Add(week_pairs_count >= base_p_per_week)
             model.Add(week_pairs_count <= base_p_per_week + 1)
 
-    # 3. Не більше 1 пари у группы одночасно
     for g in all_registered_groups:
         g_w = grp_w_map.get(g, max_w)
         for w in range(g_w):
@@ -352,7 +370,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     if g_active_lessons:
                         model.Add(sum(x[l["id"], w, d, s] for l in g_active_lessons) <= 1)
 
-    # 4. ВІДСУТНІСТЬ «ВІКОН» У СТУДЕНТІВ
     for g in all_registered_groups:
         g_w = grp_w_map.get(g, max_w)
         for w in range(g_w):
@@ -367,7 +384,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                                 y_s3 = sum(x[l["id"], w, d, s3] for l in g_active_lessons)
                                 model.Add(y_s1 - y_s2 + y_s3 <= 1)
 
-    # 5. Дні практики
     for _, g_row in grp_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
         p_d = str(g_row.get("День практики", "Немає")).strip()
@@ -381,7 +397,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                         for s in range(s_cnt):
                             model.Add(x[l["id"], w, p_idx, s] == 0)
 
-    # 6. Обмеження викладачів
     if not lim_df.empty:
         for _, lim_row in lim_df.iterrows():
             t_n = str(lim_row.get("Викладач", "")).strip()
@@ -418,7 +433,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                                 if w < l["eff_weeks"]:
                                     model.Add(x[l["id"], w, d_idx, s_idx] == 0)
 
-    # 7. Один викладач не проводитиме 2 пари одночасно
     all_teachers = list(set([l["teacher"] for l in semester_lessons if l["teacher"]]))
     for t in all_teachers:
         t_lessons = [l for l in semester_lessons if l["teacher"] == t]
@@ -429,7 +443,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     if t_w_lessons:
                         model.Add(sum(x[l["id"], w, d, s] for l in t_w_lessons) <= 1)
 
-    # 8. МІНІМУМ 2 ПАРИ У ВИКЛАДАЧА НА ДЕНЬ (АБО 0)
     for t in all_teachers:
         t_lessons = [l for l in semester_lessons if l["teacher"] == t]
         for w in range(max_w):
@@ -439,7 +452,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                     t_day_count = sum(x[l["id"], w, d, s] for l in t_w_lessons for s in range(s_cnt))
                     model.Add(t_day_count != 1)
 
-    # 9. Комп'ютерний клас
     comp_lessons = [l for l in semester_lessons if "Комп" in l["room"]]
     for w in range(max_w):
         for d in range(d_cnt):
@@ -448,7 +460,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
                 if c_w_lessons:
                     model.Add(sum(x[l["id"], w, d, s] for l in c_w_lessons) <= 1)
 
-    # ЦІЛЬОВА ФУНКЦІЯ ПРІОРИТЕТІВ
     penalties = []
     slot_penalties = {0: 10, 1: 0, 2: 0, 3: 0, 4: 100}
 
@@ -470,7 +481,6 @@ def generate_full_semester_schedule(max_w, d_cnt, s_cnt, day_names, slot_labels,
     if status not in [OPTIMAL, FEASIBLE]:
         return None, "Не вдалося розставити розклад. Перевірте обмеження або збільшіть вільні слоти."
 
-    # Збереження розрахованого розкладу в структуру даних
     schedule_records = []
     for l in semester_lessons:
         for w in range(l["eff_weeks"]):
@@ -528,7 +538,6 @@ if st.session_state.schedule_data is not None:
     all_teachers = st.session_state.schedule_data["active_teachers"]
     g_df = st.session_state.schedule_data["groups_df"]
 
-    # Карта практики для груп
     prac_map = {}
     for _, g_row in g_df.iterrows():
         g_n = str(g_row.get("Група", "")).strip()
@@ -545,7 +554,6 @@ if st.session_state.schedule_data is not None:
     if view_option == "📅 Повний розклад по тижнях (Всі групи)":
         selected_week = st.selectbox("Оберіть тиждень:", range(1, m_weeks + 1), format_func=lambda x: f"Тиждень {x}")
         
-        # Побудова таблиці для вибраного тижня
         week_rows = []
         for d_name in DAY_NAMES[:d_cnt]:
             for s_idx in range(s_cnt):
@@ -611,7 +619,6 @@ if st.session_state.schedule_data is not None:
         workbook = writer.book
         wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'vcenter', 'align': 'center'})
 
-        # 1. Повний розклад по кожному тижню окремими вкладками
         for w in range(1, m_weeks + 1):
             w_rows = []
             for d_name in DAY_NAMES[:d_cnt]:
@@ -633,7 +640,6 @@ if st.session_state.schedule_data is not None:
             df_w = pd.DataFrame(w_rows)
             df_w.to_excel(writer, index=False, sheet_name=f"Тиждень {w}")
 
-        # 2. Вкладки для кожного викладача на весь семестр
         for t_name in all_teachers:
             if not t_name:
                 continue
