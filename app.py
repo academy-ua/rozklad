@@ -38,13 +38,16 @@ ACTIVE_SLOT_OPTIONS = SLOT_OPTIONS[:slots_count]
 if 'schedule_data' not in st.session_state:
     st.session_state.schedule_data = None
 
+if 'last_processed_file' not in st.session_state:
+    st.session_state.last_processed_file = None
+
 if 'cfg_groups' not in st.session_state:
     st.session_state.cfg_groups = pd.DataFrame([
         {"Група": "ПО-11Б", "Кількість тижнів": max_weeks, "День практики": "Немає"}
     ])
 
 if 'cfg_teachers' not in st.session_state:
-    st.session_state.cfg_teachers = "Усатенко В.М."
+    st.session_state.cfg_teachers = "Черненко В.П.\nШкляєва Г.О."
 
 if 'cfg_rooms' not in st.session_state:
     st.session_state.cfg_rooms = "1\n 27-А Комп'ютерний клас\n32\nОНЛАЙН"
@@ -67,64 +70,66 @@ if 'cfg_curriculum' not in st.session_state:
         }
     ])
 
-# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ З ПОВНОЮ АДАПТАЦІЄЮ ---
+# --- БЛОК ЗБЕРЕЖЕННЯ ТА ВІДНОВЛЕННЯ ДАНИХ ---
 st.markdown("### 💾 Збереження та відновлення налаштувань")
 col_imp, col_exp = st.columns(2)
 
 with col_imp:
     uploaded_file = st.file_uploader("📂 Відновити збережені дані (файл .json)", type=["json"])
     if uploaded_file is not None:
-        try:
-            config = json.load(uploaded_file)
-            
-            # 1. Адаптація списку груп під тижні
-            raw_groups = config.get("groups", [])
-            adapted_groups = []
-            for g_item in raw_groups:
-                g_dict = dict(g_item)
-                if "Формат за замовчуванням" in g_dict: del g_dict["Формат за замовчуванням"]
-                if "Формат" in g_dict: del g_dict["Формат"]
-                if "Кількість тижнів" not in g_dict or pd.isnull(g_dict["Кількість тижнів"]):
-                    g_dict["Кількість тижнів"] = max_weeks
-                adapted_groups.append(g_dict)
-
-            # 2. Адаптація навчального плану (конвертація "Група" -> "Групи")
-            raw_curriculum = config.get("curriculum", [])
-            adapted_curriculum = []
-            for c_item in raw_curriculum:
-                c_dict = dict(c_item)
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+        
+        # Обробляємо файл лише 1 раз, щоб уникнути зациклення rerun
+        if st.session_state.last_processed_file != file_id:
+            try:
+                config = json.load(uploaded_file)
                 
-                # Якщо у старому файлі колонка називалася "Група"
-                if "Група" in c_dict and "Групи" not in c_dict:
-                    g_val = c_dict.pop("Група")
-                    if isinstance(g_val, str):
-                        c_dict["Групи"] = [g.strip() for g in g_val.split(",") if g.strip()]
-                    elif isinstance(g_val, list):
-                        c_dict["Групи"] = g_val
-                    else:
-                        c_dict["Групи"] = []
-                elif "Групи" in c_dict:
-                    if isinstance(c_dict["Групи"], str):
-                        c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
+                # 1. Адаптація груп
+                raw_groups = config.get("groups", [])
+                adapted_groups = []
+                for g_item in raw_groups:
+                    g_dict = dict(g_item)
+                    if "Формат за замовчуванням" in g_dict: del g_dict["Формат за замовчуванням"]
+                    if "Формат" in g_dict: del g_dict["Формат"]
+                    if "Кількість тижнів" not in g_dict or pd.isnull(g_dict["Кількість тижнів"]):
+                        g_dict["Кількість тижнів"] = max_weeks
+                    adapted_groups.append(g_dict)
 
-                adapted_curriculum.append(c_dict)
+                # 2. Адаптація навчального плану
+                raw_curriculum = config.get("curriculum", [])
+                adapted_curriculum = []
+                for c_item in raw_curriculum:
+                    c_dict = dict(c_item)
+                    if "Група" in c_dict and "Групи" not in c_dict:
+                        g_val = c_dict.pop("Група")
+                        if isinstance(g_val, str):
+                            c_dict["Групи"] = [g.strip() for g in g_val.split(",") if g.strip()]
+                        elif isinstance(g_val, list):
+                            c_dict["Групи"] = g_val
+                        else:
+                            c_dict["Групи"] = []
+                    elif "Групи" in c_dict:
+                        if isinstance(c_dict["Групи"], str):
+                            c_dict["Групи"] = [g.strip() for g in c_dict["Групи"].split(",") if g.strip()]
 
-            # Оновлення сесії
-            st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
-            st.session_state.cfg_teachers = config.get("teachers", "")
-            st.session_state.cfg_rooms = config.get("rooms", "")
-            st.session_state.cfg_limits = pd.DataFrame(config.get("limits", []))
-            st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
-            
-            # Скидання кешу віджетів Streamlit для примусового оновлення таблиць
-            for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
-                if key in st.session_state:
-                    del st.session_state[key]
+                    adapted_curriculum.append(c_dict)
 
-            st.success("Дані успішно завантажено! Дисципліни та групи відновлено.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Помилка зчитування файлу: {e}")
+                st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
+                st.session_state.cfg_teachers = config.get("teachers", "")
+                st.session_state.cfg_rooms = config.get("rooms", "")
+                st.session_state.cfg_limits = pd.DataFrame(config.get("limits", []))
+                st.session_state.cfg_curriculum = pd.DataFrame(adapted_curriculum)
+                st.session_state.last_processed_file = file_id
+                
+                # Скидання клейм кешу редакторів
+                for key in ["groups_editor", "limits_editor_grid", "curriculum_editor_grid"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+
+                st.success("Дані успішно завантажено!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Помилка зчитування файлу: {e}")
 
 # 2. Довідники закладу
 st.markdown("### 2. Довідники закладу")
