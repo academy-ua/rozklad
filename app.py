@@ -20,30 +20,13 @@ SLOT_OPTIONS = [f"{s['label']} ({s['time']})" for s in SLOT_DETAILS]
 SLOT_LABELS = [f"{s['label']}\n({s['time']})" for s in SLOT_DETAILS]
 DAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"]
 
-# Колбек синхронізації тижнів без повторного додавання рядків
-def on_max_weeks_change():
-    new_max = st.session_state.get("max_weeks_input", 15)
-    
-    if 'cfg_groups' in st.session_state and isinstance(st.session_state.cfg_groups, pd.DataFrame):
-        df = st.session_state.cfg_groups.drop_duplicates(subset=["Група"]).reset_index(drop=True)
-        if "Кількість тижнів" in df.columns:
-            df["Кількість тижнів"] = df["Кількість тижнів"].apply(
-                lambda x: min(int(x), new_max) if pd.notnull(x) and str(x).isdigit() else new_max
-            )
-        st.session_state.cfg_groups = df
-
-    if "groups_editor" in st.session_state:
-        del st.session_state["groups_editor"]
-
 # 1. Параметри навчального семестру
 st.markdown("### 1. Параметри сітки розкладу")
 col_w, col_d, col_s = st.columns(3)
 with col_w:
     max_weeks = st.number_input(
         "Максимальна кількість тижнів у семестрі", 
-        min_value=1, max_value=25, value=15, 
-        key="max_weeks_input",
-        on_change=on_max_weeks_change
+        min_value=1, max_value=25, value=15
     )
 with col_d:
     days_count = st.number_input("Навчальних днів на тиждень", min_value=1, max_value=6, value=5)
@@ -60,7 +43,7 @@ if 'schedule_data' not in st.session_state:
 
 if 'cfg_groups' not in st.session_state:
     st.session_state.cfg_groups = pd.DataFrame([
-        {"Група": "ПО-11Б", "Кількість тижнів": max_weeks, "День практики": "Немає"}
+        {"Група": "ПО-11Б", "Кількість тижнів": 15, "День практики": "Немає"}
     ])
 
 if 'cfg_teachers' not in st.session_state:
@@ -87,7 +70,7 @@ if 'cfg_curriculum' not in st.session_state:
         }
     ])
 
-# --- ФУНКЦІЯ-КОЛБЕК ДЛЯ ВІДНОВЛЕННЯ JSON ---
+# --- ФУНКЦІЯ ВІДНОВЛЕННЯ З JSON ---
 def handle_json_upload():
     uploaded_file = st.session_state.get("config_file_uploader")
     if uploaded_file is not None:
@@ -103,7 +86,7 @@ def handle_json_upload():
                     if g_name:
                         w_val = g_item.get("Кількість тижнів")
                         try:
-                            w_num = min(int(w_val), max_weeks) if pd.notnull(w_val) else max_weeks
+                            w_num = int(w_val) if pd.notnull(w_val) else max_weeks
                         except (ValueError, TypeError):
                             w_num = max_weeks
                         prac_val = str(g_item.get("День практики") or "Немає").strip()
@@ -176,7 +159,7 @@ def handle_json_upload():
                     })
 
             if adapted_groups:
-                st.session_state.cfg_groups = pd.DataFrame(adapted_groups).drop_duplicates(subset=["Група"]).reset_index(drop=True)
+                st.session_state.cfg_groups = pd.DataFrame(adapted_groups)
             st.session_state.cfg_teachers = teachers_str
             st.session_state.cfg_rooms = rooms_str
             if adapted_limits:
@@ -221,14 +204,13 @@ with col_g:
         num_rows="dynamic",
         column_config={
             "Група": st.column_config.TextColumn(required=True),
-            "Кількість тижнів": st.column_config.NumberColumn(min_value=1, max_value=max_weeks, default=max_weeks, required=True),
+            "Кількість тижнів": st.column_config.NumberColumn(min_value=1, max_value=25, default=15, required=True),
             "День практики": st.column_config.SelectboxColumn(options=["Немає"] + ACTIVE_DAYS)
         },
         use_container_width=True,
         key="groups_editor"
     )
-    # Збереження стану з автоматичним видаленням можливих дублікатів груп
-    st.session_state.cfg_groups = groups_df.drop_duplicates(subset=["Група"]).reset_index(drop=True)
+    st.session_state.cfg_groups = groups_df
 
 with col_t:
     st.markdown("**Список викладачів**")
@@ -283,9 +265,9 @@ if not active_rooms: active_rooms = ["1"]
 group_weeks_map = {}
 for _, g_row in active_groups_df.iterrows():
     g_n = str(g_row.get("Група", "")).strip()
-    g_w = int(g_row.get("Кількість тижнів", max_weeks)) if pd.notnull(g_row.get("Кількість тижнів")) else max_weeks
+    g_w = int(g_row.get("Кількість тижнів", 15)) if pd.notnull(g_row.get("Кількість тижнів")) else 15
     if g_n:
-        group_weeks_map[g_n] = min(g_w, max_weeks)
+        group_weeks_map[g_n] = g_w
 
 # 3. Обмеження викладачів
 st.markdown("### 3. Обмеження та недоступність викладачів")
