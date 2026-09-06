@@ -115,17 +115,51 @@ def handle_json_upload():
                             "День практики": prac_val if prac_val in DAY_NAMES else "Немає"
                         })
 
-            raw_t = config.get("teachers", "")
-            if isinstance(raw_t, list):
-                teachers_str = "\n".join([str(t).strip() for t in raw_t if str(t).strip()])
-            else:
-                teachers_str = str(raw_t)
-            
-            raw_r = config.get("rooms", "")
-            if isinstance(raw_r, list):
-                rooms_str = "\n".join([str(r).strip() for r in raw_r if str(r).strip()])
-            else:
-                rooms_str = str(raw_r)
+            def extract_list_field(cfg, *possible_keys):
+                """Шукає значення за кількома можливими назвами ключа
+                (підтримка різних варіантів експорту/ручних JSON) і
+                перетворює його на багаторядковий рядок, незалежно від
+                того, чи це рядок, список рядків, чи список об'єктів
+                на кшталт {"name": "..."} / {"Назва": "..."}."""
+                raw_val = None
+                for k in possible_keys:
+                    v = cfg.get(k)
+                    if v not in (None, "", []):
+                        raw_val = v
+                        break
+
+                if raw_val is None:
+                    return ""
+
+                if isinstance(raw_val, list):
+                    items = []
+                    for item in raw_val:
+                        if isinstance(item, dict):
+                            name = (
+                                item.get("name") or item.get("Назва") or
+                                item.get("ПІБ") or item.get("Аудиторія") or
+                                item.get("Викладач") or next(iter(item.values()), "")
+                            )
+                            name = str(name).strip()
+                        else:
+                            name = str(item).strip()
+                        if name:
+                            items.append(name)
+                    return "\n".join(items)
+
+                if isinstance(raw_val, str):
+                    return raw_val.strip()
+
+                return str(raw_val).strip()
+
+            teachers_str = extract_list_field(
+                config, "teachers", "Викладачі", "Список викладачів",
+                "Список_викладачів", "teacher_list", "Педагоги"
+            )
+            rooms_str = extract_list_field(
+                config, "rooms", "Аудиторії", "Аудиторний фонд",
+                "Список аудиторій", "room_list", "Кабінети"
+            )
 
             raw_curriculum = config.get("curriculum", [])
             adapted_curriculum = []
